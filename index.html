@@ -70,9 +70,16 @@
     <label class="t">Kierunek od startu</label>
     <select id="dir"><option value="">dowolny</option><option value="90">północ</option><option value="45">północny wschód</option><option value="0">wschód</option><option value="-45">południowy wschód</option><option value="-90">południe</option><option value="-135">południowy zachód</option><option value="180">zachód</option><option value="135">północny zachód</option></select>
 
-    <label class="t">Dojazd do kształtu (w jedną stronę)</label>
-    <select id="tol"><option value="300">start na trasie (do 300 m)</option><option value="1000" selected>do 1 km</option><option value="2500">do 2,5 km</option><option value="5000">do 5 km</option></select>
-    <div class="hint">Dłuższy dojazd daje więcej miejsc do wyboru, ale zabiera część dystansu.</div>
+    <label class="t">Gdzie szukać</label>
+    <select id="tol">
+      <optgroup label="Startuję stąd (dojazd liczony do dystansu)">
+        <option value="300">start na trasie (do 300 m)</option><option value="1000" selected>dojazd do 1 km</option><option value="2500">dojazd do 2,5 km</option><option value="5000">dojazd do 5 km</option>
+      </optgroup>
+      <optgroup label="Dojadę na start osobno">
+        <option value="r10000">w promieniu 10 km</option><option value="r20000">w promieniu 20 km</option><option value="r30000">w promieniu 30 km</option>
+      </optgroup>
+    </select>
+    <div class="hint" id="tolHint">Dłuższy dojazd daje więcej miejsc do wyboru, ale zabiera część dystansu.</div>
 
     <button class="main" id="go">Znajdź trasy</button>
     <div class="bar" id="bar"><i></i></div>
@@ -560,7 +567,7 @@ function evalPlacement(sp, samp, pl, ctx, start, tol) {
     const d = (X - start[0]) ** 2 + (Y - start[1]) ** 2; if (d < dmin) dmin = d;
   }
   const dm = Math.sqrt(dmin);
-  return Math.sqrt(sum / samp.length) / tau + 1.2 * dm / E + Math.max(0, dm - tol) / tau;
+  return Math.sqrt(sum / samp.length) / tau + (ctx.nearW != null ? ctx.nearW : 1.2) * dm / E + Math.max(0, dm - tol) / tau;
 }
 function dirOk(dx, dy, dir, E) {
   if (dir == null) return true;
@@ -569,12 +576,12 @@ function dirOk(dx, dy, dir, E) {
   return Math.abs(a) <= 50 * Math.PI / 180;
 }
 function searchShape(sp, ctx, start, D, tol, dir) {
-  const samp = resample(sp.path, 110);
+  const samp = resample(sp.path, ctx.nSamp || 110);
   const s0 = D * sp.lenFactor / sp.L;
   const cands = [];
   const rotStep = sp.isText ? 5 : 10;
   for (const k of [0.88, 1, 1.12]) {
-    const s = s0 * k, E = sp.ext * s, rc = E * 0.6 + tol, step = Math.max(E / 14, ctx.grid.cs * 2);
+    const s = s0 * k, E = sp.ext * s, rc = E * 0.6 + tol, step = Math.max(E / 14, ctx.grid.cs * 2, rc / 40);
     for (let rd = -sp.maxRot; rd <= sp.maxRot + 1e-9; rd += rotStep) {
       const rot = rd * Math.PI / 180;
       for (let dx = -rc; dx <= rc; dx += step) for (let dy = -rc; dy <= rc; dy += step) {
@@ -851,90 +858,183 @@ function overpassFilter(prof, areaKm2) {
   }
   return { types: t.join('|'), extra };
 }
-async function fetchRoads(bboxLL, prof, areaKm2) {
-  const [s, w, n, e] = bboxLL;
-  const { types, extra } = overpassFilter(prof, areaKm2);
-  const q = `[out:json][timeout:170][maxsize:536870912];way["highway"~"^(${types})$"]["access"!~"^(private|no)$"]["area"!="yes"]${extra}(${s},${w},${n},${e});out geom qt;`;
+async function overpassQuery(q, label) {
   let lastErr;
-  for (const url of OVERPASS) {
+  for (let attempt = 0; attempt < OVERPASS.length * 2; attempt++) {
+    const url = OVERPASS[attempt % OVERPASS.length];
     try {
-      const ctl = new AbortController(); const to = setTimeout(() => ctl.abort(), 180000);
+      const ctl = new AbortController(); const to = setTimeout(() => ctl.abort(), 150000);
       const r = await fetch(url, { method: 'POST', body: 'data=' + encodeURIComponent(q), headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, signal: ctl.signal });
-      clearTimeout(to);
-      if (!r.ok) throw new Error('HTTP ' + r.status);
-      return await r.json();
-    } catch (e) { lastErr = e; status('Serwer OSM nie odpowiedział, próbuję innego…'); }
+      const txt = await r.text(); clearTimeout(to);
+      if (!r.ok) throw new Error(r.status === 429 ? 'serwer jest przeciążony (429)' : r.status === 504 ? 'serwer nie zdążył (504)' : 'HTTP ' + r.status);
+      const j = JSON.parse(txt);
+      if (j.remark && /runtime error|timed out|out of memory/i.test(j.remark)) throw new Error('serwer przerwał zapytanie');
+      return j;
+    } catch (e) {
+      lastErr = e.name === 'AbortError' ? new Error('brak odpowiedzi w 2,5 min') : e;
+      status(`${label}: ${lastErr.message}, próbuję ${attempt + 1 < OVERPASS.length * 2 ? 'ponownie' : 'ostatni raz'}…`);
+      await new Promise(r => setTimeout(r, 2000 + attempt * 2000));
+    }
   }
-  throw new Error('Nie udało się pobrać dróg (' + (lastErr && lastErr.message) + ').');
+  throw new Error('Nie udało się pobrać dróg z OpenStreetMap (' + (lastErr && lastErr.message) + '). Serwery bywają przeciążone, spróbuj za kilka minut albo zmniejsz dystans lub promień.');
+}
+async function fetchRoads(bboxLL, prof, areaKm2, coarse) {
+  const [s, w, n, e] = bboxLL;
+  let { types, extra } = overpassFilter(prof, areaKm2);
+  if (coarse) types = 'primary|secondary|tertiary|unclassified|cycleway' + (prof === 'gravel' || prof === 'run' ? '|track' : '');
+  // duży obszar dzielę na kafelki, żeby pojedyncze zapytanie nie przekraczało limitu czasu serwera
+  const realArea = (n - s) * 111 * (e - w) * 111 * Math.cos((s + n) / 2 * Math.PI / 180);
+  const tileArea = coarse ? 2500 : 350, k = Math.max(1, Math.ceil(Math.sqrt(realArea / tileArea)));
+  const seen = new Set(), elements = [];
+  for (let i = 0; i < k; i++) for (let j = 0; j < k; j++) {
+    const ts = s + (n - s) * i / k, tn = s + (n - s) * (i + 1) / k, tw = w + (e - w) * j / k, te = w + (e - w) * (j + 1) / k;
+    const q = `[out:json][timeout:140][maxsize:536870912];way["highway"~"^(${types})$"]["access"!~"^(private|no)$"]["area"!="yes"]${extra}(${ts.toFixed(5)},${tw.toFixed(5)},${tn.toFixed(5)},${te.toFixed(5)});out geom qt;`;
+    const label = k > 1 ? `Fragment ${i * k + j + 1}/${k * k}` : 'Pobieranie';
+    if (k > 1) status(`Pobieram drogi z OpenStreetMap: fragment ${i * k + j + 1}/${k * k}…`);
+    const jres = await overpassQuery(q, label);
+    for (const el of jres.elements || []) if (!seen.has(el.id)) { seen.add(el.id); elements.push(el); }
+    progress(0.05 + 0.25 * (i * k + j + 1) / (k * k));
+  }
+  return { elements };
 }
 
 // --- główny przebieg
+$('tol').onchange = () => { $('tolHint').textContent = $('tol').value[0] === 'r'
+  ? 'Szukam najlepszych miejsc w całym promieniu. Trasa zaczyna się od razu na kształcie, a dojazd robisz osobno.'
+  : 'Dłuższy dojazd daje więcej miejsc do wyboru, ale zabiera część dystansu.'; };
 $('go').onclick = run;
-async function run() {
-  if (!startLL) { status('Najpierw wybierz start: wpisz miejsce, użyj lokalizacji albo dotknij mapy.', true); return; }
-  const D = Math.max(3, Math.min(200, +$('dist').value || 15)) * 1000, tol = +$('tol').value, prof = act;
-  const dirV = $('dir').value, dir = dirV === '' ? null : (+dirV) * Math.PI / 180;
-  let list;
+function haversine(a, b) { const R = 6371, t = Math.PI / 180, dLa = (b[0] - a[0]) * t, dLo = (b[1] - a[1]) * t; const h = Math.sin(dLa / 2) ** 2 + Math.cos(a[0] * t) * Math.cos(b[0] * t) * Math.sin(dLo / 2) ** 2; return 2 * R * Math.asin(Math.sqrt(h)); }
+function shapeList(D) {
   if (what.value === '__all') {
     const maxDetail = D > 60000 ? 1 : D > 30000 ? 2 : 3;
-    list = SHAPES.filter(s => s.detail <= maxDetail);
+    let list = SHAPES.filter(s => s.detail <= maxDetail);
     if (D <= 25000) list = list.concat(FUN_WORDS.map(textShape));
+    return list;
   }
-  else if (what.value === '__txt') { const t = textShape($('txt').value.trim()); if (!t) { status('Wpisz napis z liter lub cyfr.', true); return; } list = [t]; }
-  else list = SHAPES.filter(s => s.id === what.value);
+  if (what.value === '__txt') { const t = textShape($('txt').value.trim()); return t ? [t] : null; }
+  return SHAPES.filter(s => s.id === what.value);
+}
+function maxHalf(preps, D, tol) { let half = 0; for (const sp of preps) { const E = sp.ext * D * sp.lenFactor / sp.L * 1.12; half = Math.max(half, 1.2 * E + tol + 400); } return half; }
+async function loadCtx(centerLL, half, prof, coarse) {
+  const proj = makeProj(centerLL[0], centerLL[1]);
+  const sw = proj.inv(-half, -half), ne = proj.inv(half, half);
+  const area = (2 * half / 1000) ** 2;
+  const osm = await fetchRoads([sw[0], sw[1], ne[0], ne[1]], prof, coarse ? 99999 : area, coarse);
+  status(coarse ? 'Buduję mapę głównych dróg…' : 'Buduję sieć dróg…'); await tick();
+  const ctx = buildContext(osm, proj, prof, [-half, -half, half, half]);
+  ctx.proj = proj; ctx.prof = prof; ctx.bboxM = [-half, -half, half, half];
+  return ctx;
+}
+async function run() {
+  if (!startLL) { status('Najpierw wybierz start: wpisz miejsce, użyj lokalizacji albo dotknij mapy.', true); return; }
+  const D = Math.max(3, Math.min(200, +$('dist').value || 15)) * 1000, prof = act;
+  const tolV = $('tol').value, radius = tolV[0] === 'r' ? +tolV.slice(1) : 0, tol = radius ? 300 : +tolV;
+  const dirV = $('dir').value, dir = dirV === '' ? null : (+dirV) * Math.PI / 180;
+  const list = shapeList(D);
+  if (!list) { status('Wpisz napis z liter lub cyfr.', true); return; }
   const preps = list.map(prepShape);
-  // wymagany obszar
-  let half = 0;
-  for (const sp of preps) { const E = sp.ext * D * sp.lenFactor / sp.L * 1.12; half = Math.max(half, 1.2 * E + tol + 400); }
-  half = Math.min(half, 40000);
   $('go').disabled = true; clearResults();
   try {
-    let ctx;
-    const reuse = cache && cache.prof === prof && (() => { const p = cache.proj.fwd(startLL[0], startLL[1]); const b = cache.bboxM; return p[0] - half >= b[0] && p[0] + half <= b[2] && p[1] - half >= b[1] && p[1] + half <= b[3]; })();
-    if (reuse) ctx = cache;
-    else {
-      const proj = makeProj(startLL[0], startLL[1]);
-      const sw = proj.inv(-half, -half), ne = proj.inv(half, half);
-      const area = (2 * half / 1000) ** 2;
-      progress(0.05); status(`Pobieram drogi i ścieżki z OpenStreetMap (obszar ok. ${Math.round(area)} km²)… To może potrwać do minuty.`);
-      const osm = await fetchRoads([sw[0], sw[1], ne[0], ne[1]], prof, area);
-      progress(0.3); status('Buduję sieć dróg…'); await tick();
-      ctx = buildContext(osm, proj, prof, [-half, -half, half, half]);
-      ctx.proj = proj; ctx.prof = prof; ctx.bboxM = [-half, -half, half, half];
-      cache = ctx;
-    }
-    const st = ctx.proj.fwd(startLL[0], startLL[1]);
-    let chosen = preps;
-    if (preps.length > 1) {
-      status('Sprawdzam, które kształty pasują do okolicy…');
-      const sc = [];
-      for (let i = 0; i < preps.length; i++) { await tick(); const t = searchShape(preps[i], ctx, st, D, tol, dir); sc.push({ sp: preps[i], s: t[0] ? t[0].score : 1e9 }); progress(0.3 + 0.2 * (i + 1) / preps.length); }
-      sc.sort((a, b) => a.s - b.s);
-      chosen = sc.slice(0, 10).map(x => x.sp);
-    }
-    for (let i = 0; i < chosen.length; i++) {
-      status(`Układam trasę: ${chosen[i].name} (${i + 1}/${chosen.length})…`); await tick();
-      try { const r = planRoute(chosen[i], ctx, st, D, tol, dir); if (r && r.coords.length > 2) { results.push(r); renderResults(); } } catch (e) { console.error(e); }
-      progress(0.5 + 0.5 * (i + 1) / chosen.length);
-    }
-    progress(null);
-    const MIN_FIT = 60;
-    if (preps.length > 1) {
-      const good = results.filter(r => r.fit >= MIN_FIT && Math.abs(r.total - D) / D < 0.25);
-      const dropped = results.length - good.length;
-      if (good.length) { results = good; renderResults(); }
-      else { results = results.slice(0, 3); renderResults(); }
-      if (!results.length) status('Nie udało się ułożyć trasy. Spróbuj innego dystansu lub miejsca.', true);
-      else status(good.length
-        ? `Sprawdziłem ${preps.length} kształtów. Najlepiej pasujące do dróg w tej okolicy: ${good.length}${dropped ? ` (z ${chosen.length} ułożonych odrzuciłem ${dropped} słabszych)` : ''}. Konkretny kształt możesz też wybrać z listy.`
-        : 'Żaden kształt nie pasuje tu dobrze. Pokazuję trzy najlepsze. Spróbuj innego kierunku, dystansu albo dłuższego dojazdu.', !good.length);
-      if (results.length) select(0);
-    } else {
-      if (!results.length) status('Nie udało się ułożyć trasy. Spróbuj innego dystansu lub miejsca.', true);
-      else { status(results[0].fit >= MIN_FIT ? 'Gotowe.' : 'Ten kształt słabo pasuje do dróg w tej okolicy. Spróbuj innego kierunku lub dystansu.', results[0].fit < MIN_FIT); select(0); }
-    }
+    if (radius) await runRadius(preps, D, prof, dir, radius);
+    else await runLocal(preps, D, prof, dir, tol);
+    finish(preps, D);
   } catch (e) { console.error(e); progress(null); status(e.message, true); }
   $('go').disabled = false;
+}
+async function runLocal(preps, D, prof, dir, tol) {
+  const half = Math.min(maxHalf(preps, D, tol), 40000);
+  let ctx;
+  const reuse = cache && cache.prof === prof && (() => { const p = cache.proj.fwd(startLL[0], startLL[1]); const b = cache.bboxM; return p[0] - half >= b[0] && p[0] + half <= b[2] && p[1] - half >= b[1] && p[1] + half <= b[3]; })();
+  if (reuse) ctx = cache;
+  else {
+    progress(0.05); status(`Pobieram drogi i ścieżki z OpenStreetMap (obszar ok. ${Math.round((2 * half / 1000) ** 2)} km²)… To może potrwać do minuty.`);
+    ctx = await loadCtx(startLL, half, prof, false); cache = ctx;
+  }
+  const st = ctx.proj.fwd(startLL[0], startLL[1]);
+  let chosen = preps;
+  if (preps.length > 1) {
+    status('Sprawdzam, które kształty pasują do okolicy…');
+    const sc = [];
+    for (let i = 0; i < preps.length; i++) { await tick(); const t = searchShape(preps[i], ctx, st, D, tol, dir); sc.push({ sp: preps[i], s: t[0] ? t[0].score : 1e9 }); progress(0.3 + 0.2 * (i + 1) / preps.length); }
+    sc.sort((a, b) => a.s - b.s);
+    chosen = sc.slice(0, 10).map(x => x.sp);
+  }
+  lastChosen = chosen.length;
+  for (let i = 0; i < chosen.length; i++) {
+    status(`Układam trasę: ${chosen[i].name} (${i + 1}/${chosen.length})…`); await tick();
+    try { const r = planRoute(chosen[i], ctx, st, D, tol, dir); if (r && r.coords.length > 2) { r.proj = ctx.proj; results.push(r); renderResults(); } } catch (e) { console.error(e); }
+    progress(0.5 + 0.5 * (i + 1) / chosen.length);
+  }
+}
+async function runRadius(preps, D, prof, dir, radius) {
+  // Etap 1: główne drogi w całym promieniu, ocena położeń
+  const halfC = Math.min(radius + maxHalf(preps, D, 0) * 0.7, 75000);
+  progress(0.05); status(`Etap 1/2: pobieram główne drogi w promieniu ${radius / 1000} km (obszar ok. ${Math.round((2 * halfC / 1000) ** 2)} km²)… To może potrwać 1-2 minuty.`);
+  const cctx = await loadCtx(startLL, halfC, prof, true);
+  cctx.nearW = 0.15; cctx.nSamp = 60;
+  const st = [0, 0];
+  const best = [];
+  for (let i = 0; i < preps.length; i++) {
+    status(`Etap 1/2: szukam miejsc dla kształtów (${i + 1}/${preps.length})…`); await tick();
+    const t = searchShape(preps[i], cctx, st, D, radius, dir);
+    if (t[0]) best.push({ sp: preps[i], pl: t[0] });
+    progress(0.15 + 0.3 * (i + 1) / preps.length);
+  }
+  best.sort((a, b) => a.pl.score - b.pl.score);
+  const top = best.slice(0, 10);
+  // grupowanie w obszary (maks. 3), żeby pobrać pełne dane tylko tam
+  const areas = [];
+  for (const b of top) {
+    const E = b.sp.ext * b.pl.s;
+    let a = areas.find(a => hyp(a.cx - b.pl.cx, a.cy - b.pl.cy) < Math.max(a.E, E) * 0.8);
+    if (!a) { if (areas.length >= 3) continue; a = { cx: b.pl.cx, cy: b.pl.cy, E, items: [] }; areas.push(a); }
+    a.items.push(b);
+  }
+  lastChosen = areas.reduce((n, a) => n + a.items.length, 0);
+  // Etap 2: pełne dane i trasy w wybranych obszarach
+  for (let k = 0; k < areas.length; k++) {
+    const a = areas[k];
+    const ll = cctx.proj.inv(a.cx, a.cy);
+    const half = Math.min(Math.max(...a.items.map(b => b.sp.ext * b.pl.s)) * 0.85 + 2500, 40000);
+    status(`Etap 2/2: pobieram szczegółowe drogi dla miejsca ${k + 1}/${areas.length} (ok. ${haversine(startLL, ll).toFixed(0)} km od Ciebie)…`);
+    let ctx;
+    try { ctx = await loadCtx(ll, half, prof, false); } catch (e) { console.error(e); continue; }
+    for (const b of a.items) {
+      status(`Etap 2/2: układam trasę ${b.sp.name}…`); await tick();
+      try {
+        // start = punkt kształtu najbliżej Ciebie, więc trasa zaczyna się od razu na rysunku
+        const tf = placeFn(b.pl), pts = b.sp.path.map(tf);
+        let near = pts[0], bd = Infinity; for (const q of pts) { const d = hyp(q[0], q[1]); if (d < bd) { bd = d; near = q; } }
+        const nearLL = cctx.proj.inv(near[0], near[1]);
+        const stL = ctx.proj.fwd(nearLL[0], nearLL[1]);
+        const r = planRoute(b.sp, ctx, stL, D, 600, null);
+        if (r && r.coords.length > 2) {
+          r.proj = ctx.proj; r.fromUser = haversine(startLL, nearLL);
+          results.push(r); renderResults();
+        }
+      } catch (e) { console.error(e); }
+    }
+    progress(0.5 + 0.5 * (k + 1) / areas.length);
+  }
+}
+let lastChosen = 0;
+function finish(preps, D) {
+  progress(null);
+  const MIN_FIT = 60;
+  if (preps.length > 1) {
+    const good = results.filter(r => r.fit >= MIN_FIT && Math.abs(r.total - D) / D < 0.25);
+    const dropped = results.length - good.length;
+    if (good.length) { results = good; renderResults(); }
+    else { results = results.slice(0, 3); renderResults(); }
+    if (!results.length) status('Nie udało się ułożyć trasy. Spróbuj innego dystansu lub miejsca.', true);
+    else status(good.length
+      ? `Sprawdziłem ${preps.length} kształtów. Najlepiej pasujące do dróg: ${good.length}${dropped ? ` (z ${lastChosen} ułożonych odrzuciłem ${dropped} słabszych)` : ''}. Konkretny kształt możesz też wybrać z listy.`
+      : 'Żaden kształt nie pasuje tu dobrze. Pokazuję trzy najlepsze. Spróbuj innego kierunku, dystansu albo większego promienia.', !good.length);
+    if (results.length) select(0);
+  } else {
+    if (!results.length) status('Nie udało się ułożyć trasy. Spróbuj innego dystansu lub miejsca.', true);
+    else { status(results[0].fit >= MIN_FIT ? 'Gotowe.' : 'Ten kształt słabo pasuje do dróg w tej okolicy. Spróbuj innego kierunku lub dystansu.', results[0].fit < MIN_FIT); select(0); }
+  }
 }
 
 function clearResults() { $('gpx2').style.display = 'none'; results = []; sel = -1; $('results').innerHTML = ''; $('detail').style.display = 'none'; if (layers) { map.removeLayer(layers); layers = null; } }
@@ -950,11 +1050,11 @@ function renderResults() {
   const cur = sel >= 0 ? results[sel] : null;
   results.sort((a, b) => b.rank - a.rank);
   sel = cur ? results.indexOf(cur) : -1;
-  $('results').innerHTML = results.map((r, i) => `<div class="card${i === sel ? ' on' : ''}" data-i="${i}">${mini(r)}<div><div class="nm">${r.sp.name} <span class="fitb">${r.fit}%</span></div><div class="fn">${r.sp.fun}</div><div class="st">${km(r.total)} km${r.apprLen > 50 ? ' (w tym dojazd ' + km(r.apprLen) + ' km)' : ''}</div></div></div>`).join('');
+  $('results').innerHTML = results.map((r, i) => `<div class="card${i === sel ? ' on' : ''}" data-i="${i}">${mini(r)}<div><div class="nm">${r.sp.name} <span class="fitb">${r.fit}%</span></div><div class="fn">${r.sp.fun}</div><div class="st">${km(r.total)} km${r.apprLen > 50 ? ' (w tym dojazd ' + km(r.apprLen) + ' km)' : ''}${r.fromUser != null ? ' · start ' + km(r.fromUser * 1000) + ' km od Ciebie' : ''}</div></div></div>`).join('');
   [...$('results').children].forEach(c => c.onclick = () => select(+c.dataset.i));
 }
 function select(i) {
-  sel = i; const r = results[i]; const P = ctxProj();
+  sel = i; const r = results[i]; const P = r.proj;
   [...$('results').children].forEach((c, k) => c.classList.toggle('on', k === i));
   if (layers) map.removeLayer(layers);
   const ll = a => a.map(p => P.inv(p[0], p[1]));
@@ -968,17 +1068,18 @@ function select(i) {
   if (mob) { pnl.classList.add('min'); $('tog').textContent = 'rozwiń'; }
   $('gpx2').style.display = 'inline-block';
   const bnd = L.polyline(ll(r.coords.concat(r.toCoords, r.placedPath))).getBounds();
+  if (startMarker && r.fromUser != null && r.fromUser < 40) bnd.extend(startMarker.getLatLng());
   setTimeout(() => { map.invalidateSize(); map.fitBounds(bnd, mob
     ? { paddingTopLeft: [20, 20], paddingBottomRight: [20, 100] }
     : { paddingTopLeft: [pnl.offsetWidth + 40, 30], paddingBottomRight: [30, 30] }); }, 60);
   $('detail').style.display = 'block';
   $('dName').textContent = r.sp.name + ' · dopasowanie ' + r.fit + '%';
-  $('dStats').innerHTML = `Rysunek: <b>${km(r.drawLen)} km</b>${r.apprLen > 50 ? ` · dojazd i powrót: <b>${km(r.apprLen)} km</b>` : ''} · razem: <b>${km(r.total)} km</b><br>Średnie odchylenie od wzoru: ok. ${Math.round((r.devRoute + r.devShape) / 2)} m${r.wrongM > 20 ? `<br><b style="color:#b42318">Uwaga: ok. ${Math.round(r.wrongM)} m pod prąd ulicy jednokierunkowej. Sprawdź ten fragment lub przeprowadź tam rower.</b>` : ''}`;
+  $('dStats').innerHTML = `Rysunek: <b>${km(r.drawLen)} km</b>${r.apprLen > 50 ? ` · dojazd i powrót: <b>${km(r.apprLen)} km</b>` : ''} · razem: <b>${km(r.total)} km</b><br>Średnie odchylenie od wzoru: ok. ${Math.round((r.devRoute + r.devShape) / 2)} m${r.fromUser != null ? `<br>Start trasy: ok. ${km(r.fromUser * 1000)} km w linii prostej od Twojej lokalizacji (dojazd poza plikiem).` : ''}${r.wrongM > 20 ? `<br><b style="color:#b42318">Uwaga: ok. ${Math.round(r.wrongM)} m pod prąd ulicy jednokierunkowej. Sprawdź ten fragment lub przeprowadź tam rower.</b>` : ''}`;
 }
-function ctxProj() { return cache.proj; }
+
 $('gpx2').onclick = () => $('gpx').click();
 $('gpx').onclick = () => {
-  const r = results[sel]; if (!r) return; const P = ctxProj();
+  const r = results[sel]; if (!r) return; const P = r.proj;
   let seq = r.coords; if ($('withAppr').checked) seq = r.toCoords.concat(r.coords.slice(1), r.backCoords.slice(1));
   const name = 'Trasownik – ' + r.sp.name.replace(/[„”]/g, '') + ' ' + km(r.total) + ' km';
   const pts = seq.map(p => { const [la, lo] = P.inv(p[0], p[1]); return `<trkpt lat="${la.toFixed(6)}" lon="${lo.toFixed(6)}"></trkpt>`; }).join('\n');

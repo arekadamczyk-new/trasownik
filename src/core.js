@@ -290,7 +290,7 @@ function evalPlacement(sp, samp, pl, ctx, start, tol) {
     const d = (X - start[0]) ** 2 + (Y - start[1]) ** 2; if (d < dmin) dmin = d;
   }
   const dm = Math.sqrt(dmin);
-  return Math.sqrt(sum / samp.length) / tau + 1.2 * dm / E + Math.max(0, dm - tol) / tau;
+  return Math.sqrt(sum / samp.length) / tau + (ctx.nearW != null ? ctx.nearW : 1.2) * dm / E + Math.max(0, dm - tol) / tau;
 }
 function dirOk(dx, dy, dir, E) {
   if (dir == null) return true;
@@ -299,12 +299,12 @@ function dirOk(dx, dy, dir, E) {
   return Math.abs(a) <= 50 * Math.PI / 180;
 }
 function searchShape(sp, ctx, start, D, tol, dir) {
-  const samp = resample(sp.path, 110);
+  const samp = resample(sp.path, ctx.nSamp || 110);
   const s0 = D * sp.lenFactor / sp.L;
   const cands = [];
   const rotStep = sp.isText ? 5 : 10;
   for (const k of [0.88, 1, 1.12]) {
-    const s = s0 * k, E = sp.ext * s, rc = E * 0.6 + tol, step = Math.max(E / 14, ctx.grid.cs * 2);
+    const s = s0 * k, E = sp.ext * s, rc = E * 0.6 + tol, step = Math.max(E / 14, ctx.grid.cs * 2, rc / 40);
     for (let rd = -sp.maxRot; rd <= sp.maxRot + 1e-9; rd += rotStep) {
       const rot = rd * Math.PI / 180;
       for (let dx = -rc; dx <= rc; dx += step) for (let dy = -rc; dy <= rc; dy += step) {
