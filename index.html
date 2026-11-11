@@ -906,6 +906,7 @@ async function fetchRoads(bboxLL, prof, areaKm2, coarse, prefix) {
     } catch (e) { failed++; console.warn(e); }
     if (k > 1) await new Promise(r => setTimeout(r, 800));
   }
+  missingTiles += failed;
   if (failed === k * k) throw new Error('Nie udało się pobrać dróg z OpenStreetMap: serwery są teraz przeciążone. Spróbuj za kilka-kilkanaście minut albo zmniejsz dystans lub promień.');
   return { elements, failed, tiles: k * k };
 }
@@ -944,7 +945,6 @@ async function loadCtx(centerLL, half, prof, coarse, prefix, halfY) {
   status(coarse ? 'Buduję mapę głównych dróg…' : 'Buduję sieć dróg…'); await tick();
   const ctx = buildContext(osm, proj, prof, [-hx, -hy, hx, hy]);
   ctx.proj = proj; ctx.prof = prof; ctx.bboxM = [-hx, -hy, hx, hy];
-  if (osm.failed) missingTiles += osm.failed;
   return ctx;
 }
 let missingTiles = 0;
