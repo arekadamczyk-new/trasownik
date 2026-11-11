@@ -1,0 +1,721 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>Trasownik – trasy w kształtach</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+  :root { --acc:#e5531a; --ink:#1d1d1f; --mut:#6b6b70; --bg:#fff; --line:#e4e4e7; }
+  * { box-sizing:border-box; }
+  html,body { margin:0; height:100%; font:15px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; color:var(--ink); }
+  #map { position:fixed; inset:0; }
+  .panel { position:fixed; z-index:1000; background:var(--bg); box-shadow:0 4px 24px rgba(0,0,0,.18); overflow:auto; }
+  @media (min-width:800px) { .panel { top:12px; left:12px; bottom:12px; width:370px; border-radius:14px; } }
+  @media (max-width:799px) { .panel { left:0; right:0; bottom:0; max-height:58vh; border-radius:16px 16px 0 0; } .panel.min { max-height:64px; overflow:hidden; } }
+  .head { display:flex; align-items:center; justify-content:space-between; padding:12px 16px 4px; position:sticky; top:0; background:var(--bg); z-index:2; }
+  .head h1 { font-size:18px; margin:0; }
+  .head button { border:0; background:none; font-size:14px; color:var(--mut); padding:6px; }
+  .sec { padding:6px 16px 10px; }
+  label.t { display:block; font-size:12px; font-weight:600; color:var(--mut); text-transform:uppercase; letter-spacing:.04em; margin:10px 0 5px; }
+  .row { display:flex; gap:8px; align-items:center; }
+  input[type=text], input[type=number], select { width:100%; padding:9px 10px; border:1px solid var(--line); border-radius:9px; font:inherit; background:#fff; }
+  button.b { padding:9px 12px; border:1px solid var(--line); border-radius:9px; background:#f6f6f7; font:inherit; white-space:nowrap; cursor:pointer; }
+  button.main { width:100%; margin-top:14px; padding:12px; border:0; border-radius:10px; background:var(--acc); color:#fff; font-weight:600; font-size:16px; cursor:pointer; }
+  button.main:disabled { opacity:.5; }
+  .seg { display:flex; border:1px solid var(--line); border-radius:9px; overflow:hidden; }
+  .seg button { flex:1; border:0; background:#fff; padding:9px; font:inherit; cursor:pointer; }
+  .seg button.on { background:var(--ink); color:#fff; }
+  .hint { font-size:12.5px; color:var(--mut); margin-top:5px; }
+  #status { font-size:13px; color:var(--mut); margin-top:10px; min-height:18px; }
+  #status.err { color:#b42318; }
+  .bar { height:4px; background:var(--line); border-radius:2px; overflow:hidden; margin-top:6px; display:none; }
+  .bar i { display:block; height:100%; width:0; background:var(--acc); transition:width .2s; }
+  .card { display:flex; gap:10px; padding:10px; border:1px solid var(--line); border-radius:11px; margin-top:8px; cursor:pointer; align-items:center; }
+  .card.on { border-color:var(--acc); box-shadow:0 0 0 1px var(--acc) inset; }
+  .card svg { flex:0 0 64px; height:64px; background:#fafafa; border-radius:8px; }
+  .card .nm { font-weight:600; }
+  .card .fn { font-size:12.5px; color:var(--mut); }
+  .card .st { font-size:12.5px; margin-top:2px; }
+  .fitb { display:inline-block; padding:1px 6px; border-radius:6px; font-size:12px; font-weight:600; background:#fde7dd; color:#9a3412; }
+  #detail { display:none; margin-top:12px; padding:12px; background:#f6f6f7; border-radius:11px; }
+  #detail .big { font-size:16px; font-weight:600; }
+  #detail .chk { display:flex; gap:6px; align-items:center; font-size:13.5px; margin:8px 0; }
+  .leg { font-size:12px; color:var(--mut); margin-top:6px; }
+  .leg span { display:inline-block; width:18px; height:0; border-top:3px solid; vertical-align:middle; margin-right:4px; }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div class="panel" id="panel">
+  <div class="head"><h1>Trasownik</h1><button id="tog">zwiń</button></div>
+  <div class="sec">
+    <label class="t">Start</label>
+    <div class="row"><input type="text" id="q" placeholder="np. Kraków, Rynek Główny"><button class="b" id="qb">Szukaj</button></div>
+    <div class="row" style="margin-top:6px"><button class="b" id="geo">📍 Moja lokalizacja</button><span class="hint" style="margin:0">albo dotknij mapy</span></div>
+    <div class="hint" id="startTxt">Nie wybrano startu.</div>
+
+    <label class="t">Dystans całkowity (km)</label>
+    <div class="row"><input type="number" id="dist" min="3" max="120" step="1" value="15"></div>
+
+    <label class="t">Aktywność</label>
+    <div class="seg" id="act"><button data-v="run" class="on">🏃 Bieg</button><button data-v="bike">🚴 Rower</button></div>
+
+    <label class="t">Co narysować</label>
+    <select id="what"></select>
+    <input type="text" id="txt" placeholder="Twój napis, np. XD albo imię" style="display:none;margin-top:6px" maxlength="12">
+
+    <label class="t">Start może leżeć od kształtu</label>
+    <select id="tol"><option value="300">na trasie (do 300 m)</option><option value="1000" selected>do 1 km</option><option value="2500">do 2,5 km</option><option value="5000">do 5 km</option></select>
+    <div class="hint">Większa swoboda daje lepsze dopasowanie, ale wydłuża dojazd.</div>
+
+    <button class="main" id="go">Znajdź trasy</button>
+    <div class="bar" id="bar"><i></i></div>
+    <div id="status"></div>
+
+    <div id="results"></div>
+    <div id="detail">
+      <div class="big" id="dName"></div>
+      <div id="dStats" style="font-size:13.5px;margin-top:4px"></div>
+      <label class="chk"><input type="checkbox" id="withAppr" checked> Dolicz dojazd i powrót do pliku</label>
+      <button class="b" id="gpx" style="width:100%;background:var(--ink);color:#fff;border:0">Pobierz GPX</button>
+      <div class="leg"><span style="border-color:var(--acc)"></span>trasa &nbsp; <span style="border-color:#999;border-top-style:dashed"></span>kształt wzorcowy &nbsp; <span style="border-color:#2563eb;border-top-style:dashed"></span>dojazd</div>
+      <div class="hint">Plik zaimportujesz w Stravie, Garminie Connect lub Komoocie. Sprawdź trasę przed wyjściem: dane OSM bywają nieaktualne, a algorytm nie zna natężenia ruchu.</div>
+    </div>
+  </div>
+</div>
+<script>
+// ===== Rdzeń: kształty, graf dróg, dopasowanie, trasowanie =====
+const EARTH = 6371000;
+function makeProj(lat0, lon0) {
+  const ky = Math.PI / 180 * EARTH, kx = ky * Math.cos(lat0 * Math.PI / 180);
+  return { fwd: (lat, lon) => [(lon - lon0) * kx, (lat - lat0) * ky], inv: (x, y) => [lat0 + y / ky, lon0 + x / kx] };
+}
+const hyp = Math.hypot;
+function polyLen(p) { let L = 0; for (let i = 1; i < p.length; i++) L += hyp(p[i][0] - p[i - 1][0], p[i][1] - p[i - 1][1]); return L; }
+function resample(p, n) {
+  const cum = [0];
+  for (let k = 1; k < p.length; k++) cum.push(cum[k - 1] + hyp(p[k][0] - p[k - 1][0], p[k][1] - p[k - 1][1]));
+  const L = cum[cum.length - 1], out = [p[0].slice()];
+  if (L === 0 || n < 2) return out;
+  let i = 1;
+  for (let j = 1; j < n; j++) {
+    const t = L * j / (n - 1);
+    while (i < p.length - 1 && cum[i] < t) i++;
+    const sl = cum[i] - cum[i - 1], f = sl ? (t - cum[i - 1]) / sl : 0;
+    out.push([p[i - 1][0] + (p[i][0] - p[i - 1][0]) * f, p[i - 1][1] + (p[i][1] - p[i - 1][1]) * f]);
+  }
+  return out;
+}
+// zagęszcza polilinię, zachowując wierzchołki
+function densify(p, maxStep) {
+  const out = [p[0]];
+  for (let i = 1; i < p.length; i++) {
+    const a = p[i - 1], b = p[i], d = hyp(b[0] - a[0], b[1] - a[1]), k = Math.ceil(d / maxStep);
+    for (let j = 1; j <= k; j++) out.push([a[0] + (b[0] - a[0]) * j / k, a[1] + (b[1] - a[1]) * j / k]);
+  }
+  return out;
+}
+
+// ---------- Kształty (oś Y w górę = północ) ----------
+function arc(cx, cy, rx, ry, a0, a1, n) { const o = []; for (let i = 0; i <= n; i++) { const a = (a0 + (a1 - a0) * i / n) * Math.PI / 180; o.push([cx + rx * Math.cos(a), cy + ry * Math.sin(a)]); } return o; }
+const POLSKA = [[3.05,-0.07],[3.35,-0.72],[3.28,-0.81],[3.35,-1.06],[2.5,-1.99],[2.56,-2.57],[1.84,-2.18],[1.5,-2.17],[1.37,-2.28],[1.06,-2.21],[0.87,-2.41],[0.68,-2.39],[0.69,-2.22],[0.49,-1.99],[0.2,-2.2],[-0.05,-1.71],[-0.38,-1.56],[-0.5,-1.61],[-0.63,-1.48],[-0.58,-1.28],[-0.76,-1.34],[-1.09,-1.16],[-1.02,-1.35],[-1.24,-1.49],[-1.5,-1.17],[-1.37,-1.02],[-1.46,-0.94],[-1.63,-0.98],[-2.25,-0.58],[-2.36,-0.73],[-2.24,-0.34],[-2.49,0.24],[-2.4,0.49],[-2.48,0.94],[-2.78,1.29],[-2.61,1.61],[-2.7,2.14],[-2.5,2.05],[-2.52,2.23],[-2.73,2.36],[-1.52,2.7],[-1.29,2.96],[-0.35,3.24],[0.07,3.09],[-0.13,3.15],[0.01,2.84],[0.2,2.76],[0.59,2.87],[2.61,2.8],[2.96,2.55],[3.23,1.44],[3.23,1.11],[2.79,0.69],[3.08,0.45]];
+function heart() { const o = []; for (let i = 0; i < 48; i++) { const t = Math.PI + 2 * Math.PI * i / 48; o.push([16 * Math.sin(t) ** 3 / 16, (13 * Math.cos(t) - 5 * Math.cos(2 * t) - 2 * Math.cos(3 * t) - Math.cos(4 * t)) / 16]); } return o; }
+function star() { const o = []; for (let i = 0; i < 10; i++) { const a = Math.PI / 2 + i * Math.PI / 5, r = i % 2 ? 0.42 : 1; o.push([r * Math.cos(a), r * Math.sin(a)]); } return o; }
+function snail() {
+  const o = [], T = 5 * Math.PI;
+  for (let i = 0; i <= 60; i++) { const t = T * i / 60, r = 0.08 + 0.92 * t / T; o.push([r * Math.cos(t), r * Math.sin(t)]); }
+  return o.concat([[-1.2, -1.0], [1.4, -1.0], [1.8, -0.6], [1.75, 0.3], [1.5, 0.9], [1.75, 0.3], [2.0, 0.85]]);
+}
+const SHAPES = [
+  { id: 'serce', name: 'Serce', fun: 'Klasyk. Działa zawsze.', pts: heart(), closed: true, maxRot: 20 },
+  { id: 'polska', name: 'Polska', fun: 'Patriotyczny trening, Hel w cenie.', pts: POLSKA, closed: true, maxRot: 10 },
+  { id: 'gwiazda', name: 'Gwiazda', fun: 'Pięć ramion, dużo zakrętów.', pts: star(), closed: true, maxRot: 36 },
+  { id: 'kot', name: 'Kot', fun: 'Uszy wychodzą najlepiej na prostych ulicach.', pts: [[-1, 0.3], [-0.95, 1.35], [-0.4, 0.78], [0.4, 0.78], [0.95, 1.35], [1, 0.3]].concat(arc(0, 0.3, 1, 0.95, 0, -180, 14).slice(1, -1)), closed: true, maxRot: 15 },
+  { id: 'ryba', name: 'Ryba', fun: 'Bo czemu nie.', pts: arc(0.2, 0, 0.8, 0.5, 0, 160, 10).concat([[-1.15, 0.45], [-1.15, -0.45]], arc(0.2, 0, 0.8, 0.5, 200, 360, 10).slice(0, -1)), closed: true, maxRot: 30 },
+  { id: 'duszek', name: 'Duszek', fun: 'Buu! Falbanka na dole to wyzwanie.', pts: arc(0, 0.2, 1, 1, 0, 180, 12).concat([[-1, -1], [-0.66, -0.7], [-0.33, -1], [0, -0.7], [0.33, -1], [0.66, -0.7], [1, -1]]), closed: true, maxRot: 15 },
+  { id: 'grzyb', name: 'Grzyb', fun: 'Grzybobranie bez koszyka.', pts: arc(0, 0.2, 1.1, 0.9, 180, 0, 12).concat([[0.35, 0.2], [0.42, -1], [-0.42, -1], [-0.35, 0.2]]), closed: true, maxRot: 15 },
+  { id: 'choinka', name: 'Choinka', fun: 'Świąteczny trening w trzech piętrach.', pts: [[0, 1.5], [0.6, 0.6], [0.3, 0.6], [0.8, -0.2], [0.4, -0.2], [1, -1], [0.15, -1], [0.15, -1.4], [-0.15, -1.4], [-0.15, -1], [-1, -1], [-0.4, -0.2], [-0.8, -0.2], [-0.3, 0.6], [-0.6, 0.6]], closed: true, maxRot: 10 },
+  { id: 'domek', name: 'Domek', fun: 'Najłatwiejszy kształt dla miast z kratką ulic.', pts: [[-1, -1], [1, -1], [1, 0.4], [0, 1.3], [-1, 0.4]], closed: true, maxRot: 10 },
+  { id: 'blyskawica', name: 'Błyskawica', fun: 'Dla tych, co biegną szybko.', pts: [[0.25, 1.5], [-0.6, -0.1], [0, -0.1], [-0.35, -1.5], [0.7, 0.3], [0.1, 0.3], [0.6, 1.5]], closed: true, maxRot: 20 },
+  { id: 'strzalka', name: 'Strzałka', fun: 'Wskazuje drogę. Dosłownie.', pts: [[-0.25, -1], [0.25, -1], [0.25, 0.3], [0.6, 0.3], [0, 1], [-0.6, 0.3], [-0.25, 0.3]], closed: true, maxRot: 45 },
+  { id: 'slimak', name: 'Ślimak', fun: 'Tempo opcjonalne.', pts: snail(), closed: false, maxRot: 20 },
+];
+const FUN_WORDS = ['XD', 'OK', 'LOL', 'HEJ'];
+
+// Czcionka jednokreskowa: x 0..2, y 0..4, start przy linii bazowej
+const FONT = {
+  A: [[0, 0], [1, 4], [2, 0], [1.5, 2], [0.5, 2], [1.5, 2], [2, 0]],
+  B: [[0, 0], [0, 4], [1.5, 4], [2, 3.5], [2, 2.5], [1.5, 2], [0, 2], [1.5, 2], [2, 1.5], [2, 0.5], [1.5, 0], [0, 0], [1.5, 0]],
+  C: [[2, 0], [0.5, 0], [0, 0.5], [0, 3.5], [0.5, 4], [2, 4], [0.5, 4], [0, 3.5], [0, 0.5], [0.5, 0], [2, 0]],
+  D: [[0, 0], [0, 4], [1.2, 4], [2, 3], [2, 1], [1.2, 0], [0, 0], [1.2, 0]],
+  E: [[2, 0], [0, 0], [0, 2], [1.5, 2], [0, 2], [0, 4], [2, 4], [0, 4], [0, 0], [2, 0]],
+  F: [[0, 0], [0, 2], [1.5, 2], [0, 2], [0, 4], [2, 4], [0, 4], [0, 0]],
+  G: [[2, 0], [2, 2], [1, 2], [2, 2], [2, 0.5], [1.5, 0], [0.5, 0], [0, 0.5], [0, 3.5], [0.5, 4], [2, 4], [0.5, 4], [0, 3.5], [0, 0.5], [0.5, 0], [2, 0]],
+  H: [[0, 0], [0, 4], [0, 2], [2, 2], [2, 4], [2, 0]],
+  I: [[0, 0], [0, 4], [0, 0]],
+  J: [[0, 1], [0, 0.5], [0.5, 0], [1.5, 0], [2, 0.5], [2, 4], [2, 0.5], [1.5, 0], [2, 0]],
+  K: [[0, 0], [0, 4], [0, 2], [2, 4], [0, 2], [2, 0]],
+  L: [[0, 0], [0, 4], [0, 0], [2, 0]],
+  M: [[0, 0], [0, 4], [1, 2], [2, 4], [2, 0]],
+  N: [[0, 0], [0, 4], [2, 0], [2, 4], [2, 0]],
+  O: [[0.5, 0], [0, 0.5], [0, 3.5], [0.5, 4], [1.5, 4], [2, 3.5], [2, 0.5], [1.5, 0], [0.5, 0], [1.5, 0]],
+  P: [[0, 0], [0, 4], [1.5, 4], [2, 3.5], [2, 2.5], [1.5, 2], [0, 2], [0, 0]],
+  Q: [[1.5, 0], [0.5, 0], [0, 0.5], [0, 3.5], [0.5, 4], [1.5, 4], [2, 3.5], [2, 0.5], [1.5, 0], [1, 1], [1.5, 0], [2, 0]],
+  R: [[0, 0], [0, 4], [1.5, 4], [2, 3.5], [2, 2.5], [1.5, 2], [0, 2], [2, 0]],
+  S: [[0, 0], [1.5, 0], [2, 0.5], [2, 1.5], [1.5, 2], [0.5, 2], [0, 2.5], [0, 3.5], [0.5, 4], [2, 4]],
+  T: [[1, 0], [1, 4], [0, 4], [2, 4], [1, 4], [1, 0]],
+  U: [[0.5, 0], [0, 0.5], [0, 4], [0, 0.5], [0.5, 0], [1.5, 0], [2, 0.5], [2, 4], [2, 0.5], [1.5, 0]],
+  V: [[1, 0], [0, 4], [1, 0], [2, 4], [1, 0]],
+  W: [[0.5, 0], [0, 4], [0.5, 0], [1, 2], [1.5, 0], [2, 4], [1.5, 0]],
+  X: [[0, 0], [2, 4], [1, 2], [0, 4], [2, 0]],
+  Y: [[1, 0], [1, 2], [0, 4], [1, 2], [2, 4], [1, 2], [1, 0]],
+  Z: [[2, 0], [0, 0], [2, 4], [0, 4], [2, 4], [0, 0], [2, 0]],
+  0: [[0.5, 0], [0, 0.5], [0, 3.5], [0.5, 4], [1.5, 4], [2, 3.5], [2, 0.5], [1.5, 0], [0.5, 0], [1.5, 0]],
+  1: [[1, 0], [1, 4], [0.3, 3.3], [1, 4], [1, 0]],
+  2: [[2, 0], [0, 0], [2, 2.5], [2, 3.5], [1.5, 4], [0.5, 4], [0, 3.5]],
+  3: [[0, 0], [1.5, 0], [2, 0.5], [2, 1.5], [1.5, 2], [0.7, 2], [1.5, 2], [2, 2.5], [2, 3.5], [1.5, 4], [0, 4]],
+  4: [[1.5, 0], [1.5, 4], [0, 1.3], [2, 1.3], [1.5, 1.3], [1.5, 0]],
+  5: [[0, 0], [1.5, 0], [2, 0.5], [2, 2], [1.5, 2.5], [0, 2.5], [0, 4], [2, 4]],
+  6: [[1.5, 0], [0.5, 0], [0, 0.5], [0, 3.5], [0.5, 4], [2, 4], [0.5, 4], [0, 3.5], [0, 2.3], [1.5, 2.3], [2, 1.8], [2, 0.5], [1.5, 0]],
+  7: [[0.5, 0], [2, 4], [0, 4]],
+  8: [[0.5, 0], [1.5, 0], [2, 0.5], [2, 1.5], [1.5, 2], [0.5, 2], [0, 2.5], [0, 3.5], [0.5, 4], [1.5, 4], [2, 3.5], [2, 2.5], [1.5, 2], [0.5, 2], [0, 1.5], [0, 0.5], [0.5, 0]],
+  9: [[0.5, 0], [1.5, 0], [2, 0.5], [2, 3.5], [1.5, 4], [0.5, 4], [0, 3.5], [0, 2.2], [0.5, 1.7], [2, 1.7], [2, 0.5], [1.5, 0]],
+};
+const DIAK = { 'Ą': 'A', 'Ć': 'C', 'Ę': 'E', 'Ł': 'L', 'Ń': 'N', 'Ó': 'O', 'Ś': 'S', 'Ź': 'Z', 'Ż': 'Z' };
+function textShape(str) {
+  const out = []; let x = 0;
+  for (let ch of str.toUpperCase()) {
+    ch = DIAK[ch] || ch;
+    if (ch === ' ') { x += 1.5; continue; }
+    let g = FONT[ch]; if (!g) continue;
+    g = g.slice();
+    if (g[g.length - 1][1] > 0.3) g = g.concat(g.slice(0, -1).reverse()); // wróć po własnym śladzie do linii bazowej
+    const w = Math.max(...g.map(p => p[0]));
+    for (const p of g) out.push([x + p[0], p[1]]);
+    x += w + 0.9;
+  }
+  if (out.length < 2) return null;
+  return { id: 'napis-' + str, name: '„' + str.toUpperCase() + '”', fun: 'Napis widoczny na mapie aktywności.', pts: out, closed: false, maxRot: 10, isText: true };
+}
+function prepShape(sh) {
+  let p = sh.pts.map(q => q.slice());
+  const xs = p.map(q => q[0]), ys = p.map(q => q[1]);
+  const cx = (Math.min(...xs) + Math.max(...xs)) / 2, cy = (Math.min(...ys) + Math.max(...ys)) / 2;
+  p = p.map(q => [q[0] - cx, q[1] - cy]);
+  const path = sh.closed ? p.concat([p[0]]) : p;
+  const w = Math.max(...xs) - Math.min(...xs), h = Math.max(...ys) - Math.min(...ys);
+  return Object.assign({}, sh, { verts: p, path, L: polyLen(path), ext: Math.max(w, h), lenFactor: sh.closed ? 0.82 : 0.8 });
+}
+function placeFn(pl) { const c = Math.cos(pl.rot), s = Math.sin(pl.rot); return q => [pl.cx + pl.s * (q[0] * c - q[1] * s), pl.cy + pl.s * (q[0] * s + q[1] * c)]; }
+
+// ---------- Siatka i transformata odległości ----------
+function makeGrid(x0, y0, x1, y1, cs) {
+  const W = Math.ceil((x1 - x0) / cs) + 1, H = Math.ceil((y1 - y0) / cs) + 1;
+  return { x0, y0, cs, W, H };
+}
+function newField(g) { const f = new Float32Array(g.W * g.H); f.fill(1e9); return f; }
+function rasterSeg(g, f, ax, ay, bx, by) {
+  const d = hyp(bx - ax, by - ay), k = Math.max(1, Math.ceil(d / (g.cs * 0.5)));
+  for (let j = 0; j <= k; j++) {
+    const X = ax + (bx - ax) * j / k, Y = ay + (by - ay) * j / k;
+    const gx = Math.round((X - g.x0) / g.cs), gy = Math.round((Y - g.y0) / g.cs);
+    if (gx >= 0 && gy >= 0 && gx < g.W && gy < g.H) f[gy * g.W + gx] = 0;
+  }
+}
+function chamfer(g, f) {
+  const W = g.W, H = g.H, a = g.cs, b = g.cs * Math.SQRT2;
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    const i = y * W + x; let v = f[i];
+    if (x > 0 && f[i - 1] + a < v) v = f[i - 1] + a;
+    if (y > 0) {
+      const u = i - W;
+      if (f[u] + a < v) v = f[u] + a;
+      if (x > 0 && f[u - 1] + b < v) v = f[u - 1] + b;
+      if (x < W - 1 && f[u + 1] + b < v) v = f[u + 1] + b;
+    }
+    f[i] = v;
+  }
+  for (let y = H - 1; y >= 0; y--) for (let x = W - 1; x >= 0; x--) {
+    const i = y * W + x; let v = f[i];
+    if (x < W - 1 && f[i + 1] + a < v) v = f[i + 1] + a;
+    if (y < H - 1) {
+      const d = i + W;
+      if (f[d] + a < v) v = f[d] + a;
+      if (x < W - 1 && f[d + 1] + b < v) v = f[d + 1] + b;
+      if (x > 0 && f[d - 1] + b < v) v = f[d - 1] + b;
+    }
+    f[i] = v;
+  }
+  return f;
+}
+function fieldAt(g, f, X, Y, cap) {
+  const gx = Math.round((X - g.x0) / g.cs), gy = Math.round((Y - g.y0) / g.cs);
+  if (gx < 0 || gy < 0 || gx >= g.W || gy >= g.H) return cap;
+  const v = f[gy * g.W + gx]; return v < cap ? v : cap;
+}
+function rasterPolyField(g, pts) { const f = newField(g); for (let i = 1; i < pts.length; i++) rasterSeg(g, f, pts[i - 1][0], pts[i - 1][1], pts[i][0], pts[i][1]); return chamfer(g, f); }
+
+// ---------- Graf dróg z odpowiedzi Overpass ----------
+function buildGraph(osm, proj, bike) {
+  const idx = new Map(), xs = [], ys = [];
+  const eA = [], eB = [], eDir = []; // eDir: 0 obie strony, 1 tylko A->B
+  function nodeId(key, lat, lon) { let i = idx.get(key); if (i === undefined) { i = xs.length; idx.set(key, i); const p = proj.fwd(lat, lon); xs.push(p[0]); ys.push(p[1]); } return i; }
+  for (const el of osm.elements || []) {
+    if (el.type !== 'way' || !el.geometry) continue;
+    const t = el.tags || {};
+    let dir = 0;
+    if (bike) {
+      const ow = t.oneway, obn = t['oneway:bicycle'] === 'no' || t['cycleway'] === 'opposite' || t['cycleway'] === 'opposite_lane';
+      if (!obn && (ow === 'yes' || ow === '1' || t.junction === 'roundabout')) dir = 1;
+      if (!obn && ow === '-1') dir = -1;
+    }
+    let prev = -1;
+    for (let k = 0; k < el.geometry.length; k++) {
+      const gpt = el.geometry[k]; if (!gpt) { prev = -1; continue; }
+      const key = el.nodes ? el.nodes[k] : (gpt.lat.toFixed(7) + ',' + gpt.lon.toFixed(7));
+      const i = nodeId(key, gpt.lat, gpt.lon);
+      if (prev >= 0 && prev !== i) {
+        if (dir === -1) { eA.push(i); eB.push(prev); eDir.push(1); } else { eA.push(prev); eB.push(i); eDir.push(dir); }
+      }
+      prev = i;
+    }
+  }
+  const n = xs.length, deg = new Int32Array(n + 1);
+  for (let e = 0; e < eA.length; e++) { deg[eA[e]]++; if (!eDir[e]) deg[eB[e]]++; }
+  const start = new Int32Array(n + 1); for (let i = 0; i < n; i++) start[i + 1] = start[i] + deg[i];
+  const m = start[n], to = new Int32Array(m), len = new Float32Array(m), fill = start.slice(0, n);
+  const X = Float64Array.from(xs), Y = Float64Array.from(ys);
+  for (let e = 0; e < eA.length; e++) {
+    const a = eA[e], b = eB[e], L = hyp(X[a] - X[b], Y[a] - Y[b]);
+    to[fill[a]] = b; len[fill[a]++] = L;
+    if (!eDir[e]) { to[fill[b]] = a; len[fill[b]++] = L; }
+  }
+  // największa składowa spójności (nieskierowana)
+  const und = new Map();
+  const nb = Array.from({ length: n }, () => []);
+  for (let e = 0; e < eA.length; e++) { nb[eA[e]].push(eB[e]); nb[eB[e]].push(eA[e]); }
+  const comp = new Int32Array(n).fill(-1); let best = -1, bestSize = 0, cid = 0;
+  for (let s = 0; s < n; s++) {
+    if (comp[s] >= 0) continue;
+    const st = [s]; comp[s] = cid; let size = 0;
+    while (st.length) { const u = st.pop(); size++; for (const v of nb[u]) if (comp[v] < 0) { comp[v] = cid; st.push(v); } }
+    if (size > bestSize) { bestSize = size; best = cid; }
+    cid++;
+  }
+  const inMain = new Uint8Array(n); for (let i = 0; i < n; i++) inMain[i] = comp[i] === best ? 1 : 0;
+  return { n, X, Y, start, to, len, inMain, edges: { eA, eB }, mainSize: bestSize };
+}
+function buildNodeIndex(G, cell) {
+  const map = new Map();
+  for (let i = 0; i < G.n; i++) {
+    if (!G.inMain[i]) continue;
+    const k = Math.floor(G.X[i] / cell) + ',' + Math.floor(G.Y[i] / cell);
+    let a = map.get(k); if (!a) map.set(k, a = []); a.push(i);
+  }
+  return { cell, map };
+}
+function nearestNode(G, NI, x, y, maxR) {
+  const c = NI.cell, cx = Math.floor(x / c), cy = Math.floor(y / c);
+  let best = -1, bd = Infinity;
+  const maxRing = Math.ceil((maxR || 5000) / c);
+  for (let r = 0; r <= maxRing; r++) {
+    for (let dx = -r; dx <= r; dx++) for (let dy = -r; dy <= r; dy++) {
+      if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
+      const a = NI.map.get((cx + dx) + ',' + (cy + dy)); if (!a) continue;
+      for (const i of a) { const d = hyp(G.X[i] - x, G.Y[i] - y); if (d < bd) { bd = d; best = i; } }
+    }
+    if (best >= 0 && bd < r * c) break;
+  }
+  return { i: best, d: bd };
+}
+
+// ---------- Kontekst analizy ----------
+function buildContext(osm, proj, bike, bboxM) {
+  const G = buildGraph(osm, proj, bike);
+  if (!G.mainSize) throw new Error('Brak dróg w tym obszarze.');
+  const side = Math.max(bboxM[2] - bboxM[0], bboxM[3] - bboxM[1]);
+  const cs = Math.max(12, side / 1100);
+  const grid = makeGrid(bboxM[0], bboxM[1], bboxM[2], bboxM[3], cs);
+  const road = newField(grid);
+  for (let a = 0; a < G.n; a++) {
+    if (!G.inMain[a]) continue;
+    for (let k = G.start[a]; k < G.start[a + 1]; k++) { const b = G.to[k]; if (b > a || true) rasterSeg(grid, road, G.X[a], G.Y[a], G.X[b], G.Y[b]); }
+  }
+  chamfer(grid, road);
+  const NI = buildNodeIndex(G, 150);
+  return { G, grid, road, NI, bike };
+}
+
+// ---------- Szukanie położenia kształtu ----------
+const CAP = 120;
+function evalPlacement(sp, samp, pl, ctx, start, tol) {
+  const c = Math.cos(pl.rot), s = Math.sin(pl.rot);
+  let sum = 0, dmin = Infinity;
+  for (const q of samp) {
+    const X = pl.cx + pl.s * (q[0] * c - q[1] * s), Y = pl.cy + pl.s * (q[0] * s + q[1] * c);
+    sum += fieldAt(ctx.grid, ctx.road, X, Y, CAP);
+    const d = (X - start[0]) ** 2 + (Y - start[1]) ** 2; if (d < dmin) dmin = d;
+  }
+  const dm = Math.sqrt(dmin);
+  return sum / samp.length + dm * 0.012 + Math.max(0, dm - tol) * 0.2;
+}
+function searchShape(sp, ctx, start, D, tol) {
+  const samp = resample(sp.path, 110);
+  const s0 = D * sp.lenFactor / sp.L;
+  const cands = [];
+  const rotStep = sp.isText ? 5 : 10;
+  for (const k of [0.88, 1, 1.12]) {
+    const s = s0 * k, E = sp.ext * s, rc = E * 0.55 + tol, step = Math.max(E / 12, ctx.grid.cs * 2);
+    for (let rd = -sp.maxRot; rd <= sp.maxRot + 1e-9; rd += rotStep) {
+      const rot = rd * Math.PI / 180;
+      for (let dx = -rc; dx <= rc; dx += step) for (let dy = -rc; dy <= rc; dy += step) {
+        if (dx * dx + dy * dy > rc * rc) continue;
+        const pl = { s, rot, cx: start[0] + dx, cy: start[1] + dy };
+        pl.score = evalPlacement(sp, samp, pl, ctx, start, tol);
+        cands.push(pl);
+      }
+    }
+  }
+  cands.sort((a, b) => a.score - b.score);
+  // różnorodne najlepsze
+  const top = [];
+  for (const c of cands) {
+    if (top.every(t => hyp(t.cx - c.cx, t.cy - c.cy) > sp.ext * c.s / 4 || Math.abs(t.rot - c.rot) > 0.25)) top.push(c);
+    if (top.length >= 3) break;
+  }
+  return top.map(pl => refine(sp, samp, pl, ctx, start, tol)).sort((a, b) => a.score - b.score);
+}
+function refine(sp, samp, pl, ctx, start, tol) {
+  let best = pl, E = sp.ext * pl.s, step = Math.max(E / 24, ctx.grid.cs);
+  for (let it = 0; it < 3; it++) {
+    const base = best;
+    for (const ds of [0.96, 1, 1.04]) for (const dr of [-3, 0, 3]) for (let i = -2; i <= 2; i++) for (let j = -2; j <= 2; j++) {
+      const c = { s: base.s * ds, rot: base.rot + dr * Math.PI / 180, cx: base.cx + i * step, cy: base.cy + j * step };
+      c.score = evalPlacement(sp, samp, c, ctx, start, tol);
+      if (c.score < best.score) best = c;
+    }
+    step /= 2;
+  }
+  return best;
+}
+
+// ---------- Trasowanie (A*) ----------
+function makeRouter(G) {
+  const n = G.n, gs = new Float64Array(n).fill(Infinity), prev = new Int32Array(n).fill(-1), closed = new Uint8Array(n);
+  let touched = [];
+  const heapN = [], heapK = [];
+  function push(node, key) { heapN.push(node); heapK.push(key); let i = heapN.length - 1; while (i > 0) { const p = (i - 1) >> 1; if (heapK[p] <= key) break; heapN[i] = heapN[p]; heapK[i] = heapK[p]; i = p; } heapN[i] = node; heapK[i] = key; }
+  function pop() { const top = heapN[0], ln = heapN.pop(), lk = heapK.pop(); if (heapN.length) { let i = 0; const L = heapN.length; while (true) { let c = 2 * i + 1; if (c >= L) break; if (c + 1 < L && heapK[c + 1] < heapK[c]) c++; if (heapK[c] >= lk) break; heapN[i] = heapN[c]; heapK[i] = heapK[c]; i = c; } heapN[i] = ln; heapK[i] = lk; } return top; }
+  // cel: punkt (tx,ty) i promień r — dowolny węzeł w promieniu kończy szukanie; exact>=0 wymusza konkretny węzeł
+  return function route(src, tx, ty, r, exact, cost, maxVisit) {
+    for (const t of touched) { gs[t] = Infinity; prev[t] = -1; closed[t] = 0; }
+    touched = [src]; heapN.length = 0; heapK.length = 0;
+    gs[src] = 0; push(src, 0);
+    let visits = 0, found = -1;
+    while (heapN.length) {
+      const u = pop(); if (closed[u]) continue; closed[u] = 1;
+      const du = hyp(G.X[u] - tx, G.Y[u] - ty);
+      if (exact >= 0 ? u === exact : du <= r) { found = u; break; }
+      if (++visits > maxVisit) break;
+      for (let k = G.start[u]; k < G.start[u + 1]; k++) {
+        const v = G.to[k]; if (!G.inMain[v]) continue;
+        const nd = gs[u] + (cost ? cost[k] : G.len[k]);
+        if (nd < gs[v]) {
+          if (gs[v] === Infinity) touched.push(v);
+          gs[v] = nd; prev[v] = u;
+          const h = exact >= 0 ? hyp(G.X[v] - G.X[exact], G.Y[v] - G.Y[exact]) : Math.max(0, hyp(G.X[v] - tx, G.Y[v] - ty) - r);
+          push(v, nd + h);
+        }
+      }
+    }
+    if (found < 0) return null;
+    const p = []; for (let u = found; u >= 0; u = prev[u]) p.push(u);
+    return p.reverse();
+  };
+}
+function pathLen(G, p) { let L = 0; for (let i = 1; i < p.length; i++) L += hyp(G.X[p[i]] - G.X[p[i - 1]], G.Y[p[i]] - G.Y[p[i - 1]]); return L; }
+
+function routePlacement(sp, pl, ctx, start) {
+  const G = ctx.G, g = ctx.grid;
+  if (!ctx.router) ctx.router = makeRouter(G);
+  const route = ctx.router;
+  const tf = placeFn(pl);
+  const placedPath = sp.path.map(tf);
+  const shapeLen = polyLen(placedPath);
+  // punkty kontrolne: wierzchołki + zagęszczenie
+  const wpStep = Math.min(450, Math.max(140, shapeLen / 50));
+  let W = densify(placedPath, wpStep);
+  if (sp.closed) {
+    W = W.slice(0, -1);
+    let bi = 0, bd = Infinity; W.forEach((q, i) => { const d = hyp(q[0] - start[0], q[1] - start[1]); if (d < bd) { bd = d; bi = i; } });
+    W = W.slice(bi).concat(W.slice(0, bi)); W.push(W[0]);
+  } else {
+    const d0 = hyp(W[0][0] - start[0], W[0][1] - start[1]), d1 = hyp(W[W.length - 1][0] - start[0], W[W.length - 1][1] - start[1]);
+    if (d1 < d0) W.reverse();
+  }
+  // pole odległości od kształtu -> koszt krawędzi
+  const sf = rasterPolyField(g, placedPath);
+  const m = G.to.length, cost = new Float32Array(m), tau = Math.max(35, Math.min(90, wpStep * 0.35));
+  for (let a = 0; a < G.n; a++) {
+    if (!G.inMain[a]) continue;
+    const fa = fieldAt(g, sf, G.X[a], G.Y[a], 400);
+    for (let k = G.start[a]; k < G.start[a + 1]; k++) {
+      const b = G.to[k];
+      const fb = fieldAt(g, sf, G.X[b], G.Y[b], 400), fm = fieldAt(g, sf, (G.X[a] + G.X[b]) / 2, (G.Y[a] + G.Y[b]) / 2, 400);
+      const d = (fa + fb + 2 * fm) / 4;
+      cost[k] = G.len[k] * (1 + (d / tau) ** 2);
+    }
+  }
+  const first = nearestNode(G, ctx.NI, W[0][0], W[0][1]).i;
+  let path = [first], cur = first;
+  const maxVisit = 400000;
+  for (let i = 1; i < W.length; i++) {
+    const isLast = i === W.length - 1;
+    const nn = nearestNode(G, ctx.NI, W[i][0], W[i][1]);
+    const r = Math.max(70, nn.d + 60);
+    const exact = (isLast && sp.closed) ? first : -1;
+    if (exact < 0 && hyp(G.X[cur] - W[i][0], G.Y[cur] - W[i][1]) <= r) continue;
+    const seg = route(cur, W[i][0], W[i][1], r, exact, cost, maxVisit);
+    if (!seg) continue;
+    for (let j = 1; j < seg.length; j++) path.push(seg[j]);
+    cur = seg[seg.length - 1];
+  }
+  path = removeTinySpurs(G, path, 40);
+  const drawLen = pathLen(G, path);
+  // dojazd z miejsca startu
+  const sNode = nearestNode(G, ctx.NI, start[0], start[1]).i;
+  let toPath = route(sNode, 0, 0, 0, path[0], null, maxVisit) || [sNode];
+  let backPath = sp.closed ? toPath.slice().reverse() : (route(path[path.length - 1], 0, 0, 0, sNode, null, maxVisit) || [path[path.length - 1]]);
+  const apprLen = pathLen(G, toPath) + pathLen(G, backPath);
+  // dopasowanie
+  const rc = path.map(i => [G.X[i], G.Y[i]]);
+  const rDense = densify(rc, g.cs * 2);
+  let a = 0; for (const q of rDense) a += fieldAt(g, sf, q[0], q[1], 300); a /= rDense.length;
+  const rf = rasterPolyField(g, rc);
+  const sDense = densify(placedPath, g.cs * 2);
+  let b = 0; for (const q of sDense) b += fieldAt(g, rf, q[0], q[1], 300); b /= sDense.length;
+  const sym = (a + b) / 2;
+  const fit = Math.round(100 * Math.max(0, 1 - sym / 150));
+  return { sp, pl, path, coords: rc, toCoords: toPath.map(i => [G.X[i], G.Y[i]]), backCoords: backPath.map(i => [G.X[i], G.Y[i]]), placedPath, drawLen, apprLen, total: drawLen + apprLen, fit, devRoute: a, devShape: b };
+}
+// usuwa krótkie "wypady i powroty" powstałe przy przyciąganiu punktów do węzłów
+function removeTinySpurs(G, p, maxLen) {
+  const st = [], acc = [];
+  for (const v of p) {
+    if (st.length >= 2 && st[st.length - 2] === v) {
+      const l = hyp(G.X[v] - G.X[st[st.length - 1]], G.Y[v] - G.Y[st[st.length - 1]]);
+      const spur = acc[acc.length - 1] + l;
+      if (spur <= maxLen) { st.pop(); acc.pop(); acc[acc.length - 1] = Math.max(acc[acc.length - 1], spur); continue; }
+    }
+    if (st.length && st[st.length - 1] === v) continue;
+    st.push(v); acc.push(0);
+  }
+  return st;
+}
+function planRoute(sp, ctx, start, D, tol) {
+  const tops = searchShape(sp, ctx, start, D, tol);
+  let best = null;
+  for (const pl of tops.slice(0, 2)) {
+    let r = routePlacement(sp, pl, ctx, start);
+    // kalibracja dystansu
+    const err = (r.total - D) / D;
+    if (Math.abs(err) > 0.1 && r.drawLen > 0) {
+      const k = Math.min(1.5, Math.max(0.6, (D - r.apprLen) / r.drawLen));
+      const samp = resample(sp.path, 110);
+      const pl2 = refine(sp, samp, Object.assign({}, pl, { s: pl.s * k, score: Infinity }), ctx, start, tol);
+      const r2 = routePlacement(sp, pl2, ctx, start);
+      if (Math.abs(r2.total - D) < Math.abs(r.total - D) && r2.fit >= r.fit - 8) r = r2;
+    }
+    r.rank = r.fit - 60 * Math.abs(r.total - D) / D - 30 * r.apprLen / Math.max(1, r.total);
+    if (!best || r.rank > best.rank) best = r;
+  }
+  return best;
+}
+if (typeof module !== 'undefined') module.exports = { makeProj, SHAPES, FUN_WORDS, textShape, prepShape, buildContext, searchShape, routePlacement, planRoute, resample, polyLen };
+
+</script>
+<script>
+(() => {
+const $ = id => document.getElementById(id);
+const map = L.map('map', { zoomControl: true }).setView([52.07, 19.48], 6);
+L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
+  maxZoom: 19, subdomains: 'abcd', attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>'
+}).addTo(map);
+
+let startLL = null, startMarker = null, act = 'run', cache = null, results = [], sel = -1, layers = null;
+
+// --- wybór kształtu
+const what = $('what');
+what.innerHTML = '<option value="__all">✨ Zaskocz mnie (kształty i śmieszne napisy)</option>' +
+  SHAPES.map(s => `<option value="${s.id}">${s.name}</option>`).join('') + '<option value="__txt">✍️ Własny napis</option>';
+what.onchange = () => { $('txt').style.display = what.value === '__txt' ? 'block' : 'none'; };
+
+$('act').onclick = e => { const b = e.target.closest('button'); if (!b) return; act = b.dataset.v; [...$('act').children].forEach(x => x.classList.toggle('on', x === b)); if (act === 'bike' && +$('dist').value < 25) $('dist').value = 40; if (act === 'run' && +$('dist').value > 40) $('dist').value = 15; };
+$('tog').onclick = () => { const p = $('panel'); p.classList.toggle('min'); $('tog').textContent = p.classList.contains('min') ? 'rozwiń' : 'zwiń'; };
+
+function setStart(lat, lon, label) {
+  startLL = [lat, lon];
+  if (!startMarker) {
+    startMarker = L.marker(startLL, { draggable: true, title: 'Start', icon: L.divIcon({ className: '', html: '<div style="width:18px;height:18px;border-radius:50%;background:#16a34a;border:3px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.5)"></div>', iconSize: [18, 18], iconAnchor: [9, 9] }) }).addTo(map);
+    startMarker.on('dragend', () => { const p = startMarker.getLatLng(); setStart(p.lat, p.lng); });
+  } else startMarker.setLatLng(startLL);
+  $('startTxt').textContent = (label ? label + ' · ' : '') + lat.toFixed(5) + ', ' + lon.toFixed(5);
+}
+map.on('click', e => { setStart(e.latlng.lat, e.latlng.lng, 'Wybrano na mapie'); });
+
+function status(t, err) { const s = $('status'); s.textContent = t; s.className = err ? 'err' : ''; }
+function progress(f) { const b = $('bar'); if (f == null) { b.style.display = 'none'; return; } b.style.display = 'block'; b.firstElementChild.style.width = Math.round(f * 100) + '%'; }
+const tick = () => new Promise(r => setTimeout(r, 0));
+
+async function geocode(q) {
+  try {
+    const r = await fetch('https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&accept-language=pl&q=' + encodeURIComponent(q));
+    const j = await r.json(); if (j[0]) return { lat: +j[0].lat, lon: +j[0].lon, name: j[0].display_name.split(',').slice(0, 2).join(',') };
+  } catch (e) {}
+  const r = await fetch('https://photon.komoot.io/api/?limit=1&q=' + encodeURIComponent(q));
+  const j = await r.json(); const f = j.features && j.features[0];
+  if (f) return { lat: f.geometry.coordinates[1], lon: f.geometry.coordinates[0], name: f.properties.name };
+  return null;
+}
+$('qb').onclick = async () => {
+  const q = $('q').value.trim(); if (!q) return;
+  status('Szukam miejsca…');
+  try { const g = await geocode(q); if (!g) { status('Nie znalazłem takiego miejsca.', true); return; } setStart(g.lat, g.lon, g.name); map.setView([g.lat, g.lon], 13); status(''); }
+  catch (e) { status('Wyszukiwanie nie działa: ' + e.message, true); }
+};
+$('q').onkeydown = e => { if (e.key === 'Enter') $('qb').click(); };
+$('geo').onclick = () => {
+  if (!navigator.geolocation) { status('Przeglądarka nie udostępnia lokalizacji.', true); return; }
+  status('Ustalam lokalizację…');
+  navigator.geolocation.getCurrentPosition(p => { setStart(p.coords.latitude, p.coords.longitude, 'Twoja lokalizacja'); map.setView(startLL, 13); status(''); },
+    e => status('Brak dostępu do lokalizacji (' + e.message + '). Wpisz miejsce albo dotknij mapy.', true), { enableHighAccuracy: true, timeout: 15000 });
+};
+
+// --- pobranie dróg z OSM
+const OVERPASS = ['https://overpass-api.de/api/interpreter', 'https://overpass.kumi.systems/api/interpreter', 'https://overpass.private.coffee/api/interpreter'];
+function highwayFilter(bike, areaKm2) {
+  let t = ['primary', 'primary_link', 'secondary', 'secondary_link', 'tertiary', 'tertiary_link', 'unclassified', 'residential', 'living_street', 'track', 'cycleway'];
+  if (!bike) t.push('pedestrian');
+  if (areaKm2 <= 250) t.push('path');
+  if (areaKm2 <= 80) { t.push('service'); if (!bike) t.push('footway', 'steps'); }
+  return t;
+}
+async function fetchRoads(bboxLL, bike, areaKm2) {
+  const [s, w, n, e] = bboxLL;
+  const types = highwayFilter(bike, areaKm2).join('|');
+  const extra = bike ? '["bicycle"!~"^(no|dismount)$"]' : '["foot"!~"^(no)$"]';
+  const q = `[out:json][timeout:170][maxsize:536870912];way["highway"~"^(${types})$"]["access"!~"^(private|no)$"]["area"!="yes"]${extra}(${s},${w},${n},${e});out geom qt;`;
+  let lastErr;
+  for (const url of OVERPASS) {
+    try {
+      const ctl = new AbortController(); const to = setTimeout(() => ctl.abort(), 180000);
+      const r = await fetch(url, { method: 'POST', body: 'data=' + encodeURIComponent(q), headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, signal: ctl.signal });
+      clearTimeout(to);
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return await r.json();
+    } catch (e) { lastErr = e; status('Serwer OSM nie odpowiedział, próbuję innego…'); }
+  }
+  throw new Error('Nie udało się pobrać dróg (' + (lastErr && lastErr.message) + ').');
+}
+
+// --- główny przebieg
+$('go').onclick = run;
+async function run() {
+  if (!startLL) { status('Najpierw wybierz start: wpisz miejsce, użyj lokalizacji albo dotknij mapy.', true); return; }
+  const D = Math.max(3, Math.min(120, +$('dist').value || 15)) * 1000, tol = +$('tol').value, bike = act === 'bike';
+  let list;
+  if (what.value === '__all') list = SHAPES.concat(FUN_WORDS.map(textShape));
+  else if (what.value === '__txt') { const t = textShape($('txt').value.trim()); if (!t) { status('Wpisz napis z liter lub cyfr.', true); return; } list = [t]; }
+  else list = SHAPES.filter(s => s.id === what.value);
+  const preps = list.map(prepShape);
+  // wymagany obszar
+  let half = 0;
+  for (const sp of preps) { const E = sp.ext * D * sp.lenFactor / sp.L * 1.12; half = Math.max(half, 1.2 * E + tol + 400); }
+  half = Math.min(half, 30000);
+  $('go').disabled = true; clearResults();
+  try {
+    let ctx;
+    const reuse = cache && cache.bike === bike && (() => { const p = cache.proj.fwd(startLL[0], startLL[1]); const b = cache.bboxM; return p[0] - half >= b[0] && p[0] + half <= b[2] && p[1] - half >= b[1] && p[1] + half <= b[3]; })();
+    if (reuse) ctx = cache;
+    else {
+      const proj = makeProj(startLL[0], startLL[1]);
+      const sw = proj.inv(-half, -half), ne = proj.inv(half, half);
+      const area = (2 * half / 1000) ** 2;
+      progress(0.05); status(`Pobieram drogi i ścieżki z OpenStreetMap (obszar ok. ${Math.round(area)} km²)… To może potrwać do minuty.`);
+      const osm = await fetchRoads([sw[0], sw[1], ne[0], ne[1]], bike, area);
+      progress(0.3); status('Buduję sieć dróg…'); await tick();
+      ctx = buildContext(osm, proj, bike, [-half, -half, half, half]);
+      ctx.proj = proj; ctx.bike = bike; ctx.bboxM = [-half, -half, half, half];
+      cache = ctx;
+    }
+    const st = ctx.proj.fwd(startLL[0], startLL[1]);
+    let chosen = preps;
+    if (preps.length > 1) {
+      status('Sprawdzam, które kształty pasują do okolicy…');
+      const sc = [];
+      for (let i = 0; i < preps.length; i++) { await tick(); const t = searchShape(preps[i], ctx, st, D, tol); sc.push({ sp: preps[i], s: t[0] ? t[0].score : 1e9 }); progress(0.3 + 0.2 * (i + 1) / preps.length); }
+      sc.sort((a, b) => a.s - b.s);
+      chosen = sc.slice(0, 7).map(x => x.sp);
+    }
+    for (let i = 0; i < chosen.length; i++) {
+      status(`Układam trasę: ${chosen[i].name} (${i + 1}/${chosen.length})…`); await tick();
+      try { const r = planRoute(chosen[i], ctx, st, D, tol); if (r && r.coords.length > 2) { results.push(r); renderResults(); } } catch (e) { console.error(e); }
+      progress(0.5 + 0.5 * (i + 1) / chosen.length);
+    }
+    progress(null);
+    if (!results.length) status('Nie udało się ułożyć trasy. Spróbuj innego dystansu lub miejsca.', true);
+    else { status(`Gotowe. Najlepsze dopasowanie: ${results[0].sp.name}. Dotknij propozycji, żeby ją obejrzeć.`); select(0); }
+  } catch (e) { console.error(e); progress(null); status(e.message, true); }
+  $('go').disabled = false;
+}
+
+function clearResults() { results = []; sel = -1; $('results').innerHTML = ''; $('detail').style.display = 'none'; if (layers) { map.removeLayer(layers); layers = null; } }
+function km(m) { return (m / 1000).toFixed(1).replace('.', ','); }
+function mini(r) {
+  const all = r.coords; const xs = all.map(p => p[0]), ys = all.map(p => p[1]);
+  const mnx = Math.min(...xs), mxx = Math.max(...xs), mny = Math.min(...ys), mxy = Math.max(...ys), sc = 52 / Math.max(mxx - mnx, mxy - mny, 1);
+  const ox = (64 - (mxx - mnx) * sc) / 2, oy = (64 - (mxy - mny) * sc) / 2;
+  const pts = all.filter((_, i) => i % 2 === 0 || i === all.length - 1).map(p => ((p[0] - mnx) * sc + ox).toFixed(1) + ',' + ((mxy - p[1]) * sc + oy).toFixed(1)).join(' ');
+  return `<svg viewBox="0 0 64 64"><polyline points="${pts}" fill="none" stroke="#e5531a" stroke-width="1.6" stroke-linejoin="round"/></svg>`;
+}
+function renderResults() {
+  const cur = sel >= 0 ? results[sel] : null;
+  results.sort((a, b) => b.rank - a.rank);
+  sel = cur ? results.indexOf(cur) : -1;
+  $('results').innerHTML = results.map((r, i) => `<div class="card${i === sel ? ' on' : ''}" data-i="${i}">${mini(r)}<div><div class="nm">${r.sp.name} <span class="fitb">${r.fit}%</span></div><div class="fn">${r.sp.fun}</div><div class="st">${km(r.total)} km${r.apprLen > 50 ? ' (w tym dojazd ' + km(r.apprLen) + ' km)' : ''}</div></div></div>`).join('');
+  [...$('results').children].forEach(c => c.onclick = () => select(+c.dataset.i));
+}
+function select(i) {
+  sel = i; const r = results[i]; const P = ctxProj();
+  [...$('results').children].forEach((c, k) => c.classList.toggle('on', k === i));
+  if (layers) map.removeLayer(layers);
+  const ll = a => a.map(p => P.inv(p[0], p[1]));
+  layers = L.layerGroup([
+    L.polyline(ll(r.placedPath), { color: '#888', weight: 3, dashArray: '6 6', opacity: .8 }),
+    L.polyline(ll(r.toCoords), { color: '#2563eb', weight: 4, dashArray: '6 6' }),
+    L.polyline(ll(r.backCoords), { color: '#2563eb', weight: 4, dashArray: '6 6' }),
+    L.polyline(ll(r.coords), { color: '#e5531a', weight: 5, opacity: .9 }),
+  ]).addTo(map);
+  map.fitBounds(L.polyline(ll(r.coords.concat(r.toCoords))).getBounds(), { padding: [30, 30] });
+  $('detail').style.display = 'block';
+  $('dName').textContent = r.sp.name + ' · dopasowanie ' + r.fit + '%';
+  $('dStats').innerHTML = `Rysunek: <b>${km(r.drawLen)} km</b>${r.apprLen > 50 ? ` · dojazd i powrót: <b>${km(r.apprLen)} km</b>` : ''} · razem: <b>${km(r.total)} km</b><br>Średnie odchylenie od wzoru: ok. ${Math.round((r.devRoute + r.devShape) / 2)} m`;
+}
+function ctxProj() { return cache.proj; }
+$('gpx').onclick = () => {
+  const r = results[sel]; if (!r) return; const P = ctxProj();
+  let seq = r.coords; if ($('withAppr').checked) seq = r.toCoords.concat(r.coords.slice(1), r.backCoords.slice(1));
+  const name = 'Trasownik – ' + r.sp.name.replace(/[„”]/g, '') + ' ' + km(r.total) + ' km';
+  const pts = seq.map(p => { const [la, lo] = P.inv(p[0], p[1]); return `<trkpt lat="${la.toFixed(6)}" lon="${lo.toFixed(6)}"></trkpt>`; }).join('\n');
+  const gpx = `<?xml version="1.0" encoding="UTF-8"?>\n<gpx version="1.1" creator="Trasownik" xmlns="http://www.topografix.com/GPX/1/1">\n<metadata><name>${name}</name></metadata>\n<trk><name>${name}</name><type>${act === 'bike' ? 'cycling' : 'running'}</type><trkseg>\n${pts}\n</trkseg></trk>\n</gpx>`;
+  const blob = new Blob([gpx], { type: 'application/gpx+xml' });
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
+  a.download = 'trasa-' + r.sp.name.toLowerCase().replace(/[^a-z0-9ąćęłńóśźż]+/g, '') + '-' + Math.round(r.total / 1000) + 'km.gpx';
+  document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+};
+})();
+</script>
+</body>
+</html>
