@@ -204,7 +204,7 @@ function overpassFilter(prof, areaKm2) {
 }
 async function overpassQuery(q, label) {
   let lastErr;
-  for (let attempt = 0; attempt < OVERPASS.length * 2; attempt++) {
+  for (let attempt = 0; attempt < OVERPASS.length; attempt++) {
     const url = OVERPASS[attempt % OVERPASS.length];
     try {
       const ctl = new AbortController(); const to = setTimeout(() => ctl.abort(), 150000);
@@ -216,30 +216,33 @@ async function overpassQuery(q, label) {
       return j;
     } catch (e) {
       lastErr = e.name === 'AbortError' ? new Error('brak odpowiedzi w 2,5 min') : e;
-      status(`${label}: ${lastErr.message}, próbuję ${attempt + 1 < OVERPASS.length * 2 ? 'ponownie' : 'ostatni raz'}…`);
-      await new Promise(r => setTimeout(r, 2000 + attempt * 2000));
+      if (attempt + 1 < OVERPASS.length) { status(`${label}: ${lastErr.message}, próbuję innego serwera…`); await new Promise(r => setTimeout(r, 3000 + attempt * 3000)); }
     }
   }
   throw new Error('Nie udało się pobrać dróg z OpenStreetMap (' + (lastErr && lastErr.message) + '). Serwery bywają przeciążone, spróbuj za kilka minut albo zmniejsz dystans lub promień.');
 }
-async function fetchRoads(bboxLL, prof, areaKm2, coarse) {
+async function fetchRoads(bboxLL, prof, areaKm2, coarse, prefix) {
+  prefix = prefix || 'Pobieram drogi z OpenStreetMap';
   const [s, w, n, e] = bboxLL;
   let { types, extra } = overpassFilter(prof, areaKm2);
   if (coarse) types = 'primary|secondary|tertiary|unclassified|cycleway' + (prof === 'gravel' || prof === 'run' ? '|track' : '');
   // duży obszar dzielę na kafelki, żeby pojedyncze zapytanie nie przekraczało limitu czasu serwera
   const realArea = (n - s) * 111 * (e - w) * 111 * Math.cos((s + n) / 2 * Math.PI / 180);
   const tileArea = coarse ? 2500 : 350, k = Math.max(1, Math.ceil(Math.sqrt(realArea / tileArea)));
-  const seen = new Set(), elements = [];
+  const seen = new Set(), elements = []; let failed = 0;
   for (let i = 0; i < k; i++) for (let j = 0; j < k; j++) {
     const ts = s + (n - s) * i / k, tn = s + (n - s) * (i + 1) / k, tw = w + (e - w) * j / k, te = w + (e - w) * (j + 1) / k;
     const q = `[out:json][timeout:140][maxsize:536870912];way["highway"~"^(${types})$"]["access"!~"^(private|no)$"]["area"!="yes"]${extra}(${ts.toFixed(5)},${tw.toFixed(5)},${tn.toFixed(5)},${te.toFixed(5)});out geom qt;`;
-    const label = k > 1 ? `Fragment ${i * k + j + 1}/${k * k}` : 'Pobieranie';
-    if (k > 1) status(`Pobieram drogi z OpenStreetMap: fragment ${i * k + j + 1}/${k * k}…`);
-    const jres = await overpassQuery(q, label);
-    for (const el of jres.elements || []) if (!seen.has(el.id)) { seen.add(el.id); elements.push(el); }
-    progress(0.05 + 0.25 * (i * k + j + 1) / (k * k));
+    const label = `${prefix}: fragment ${i * k + j + 1}/${k * k}`;
+    status(label + '…');
+    try {
+      const jres = await overpassQuery(q, label);
+      for (const el of jres.elements || []) if (!seen.has(el.id)) { seen.add(el.id); elements.push(el); }
+    } catch (e) { failed++; console.warn(e); }
+    if (k > 1) await new Promise(r => setTimeout(r, 800));
   }
-  return { elements };
+  if (failed === k * k) throw new Error('Nie udało się pobrać dróg z OpenStreetMap: serwery są teraz przeciążone. Spróbuj za kilka-kilkanaście minut albo zmniejsz dystans lub promień.');
+  return { elements, failed, tiles: k * k };
 }
 
 // --- główny przebieg
@@ -267,18 +270,22 @@ function shapeList(D) {
   return SHAPES.filter(s => s.id === what.value);
 }
 function maxHalf(preps, D, tol) { let half = 0; for (const sp of preps) { const E = sp.ext * D * sp.lenFactor / sp.L * 1.12; half = Math.max(half, 1.2 * E + tol + 400); } return half; }
-async function loadCtx(centerLL, half, prof, coarse) {
+async function loadCtx(centerLL, half, prof, coarse, prefix, halfY) {
+  const hx = half, hy = halfY || half;
   const proj = makeProj(centerLL[0], centerLL[1]);
-  const sw = proj.inv(-half, -half), ne = proj.inv(half, half);
-  const area = (2 * half / 1000) ** 2;
-  const osm = await fetchRoads([sw[0], sw[1], ne[0], ne[1]], prof, coarse ? 99999 : area, coarse);
+  const sw = proj.inv(-hx, -hy), ne = proj.inv(hx, hy);
+  const area = 4 * hx * hy / 1e6;
+  const osm = await fetchRoads([sw[0], sw[1], ne[0], ne[1]], prof, coarse ? 99999 : area, coarse, prefix);
   status(coarse ? 'Buduję mapę głównych dróg…' : 'Buduję sieć dróg…'); await tick();
-  const ctx = buildContext(osm, proj, prof, [-half, -half, half, half]);
-  ctx.proj = proj; ctx.prof = prof; ctx.bboxM = [-half, -half, half, half];
+  const ctx = buildContext(osm, proj, prof, [-hx, -hy, hx, hy]);
+  ctx.proj = proj; ctx.prof = prof; ctx.bboxM = [-hx, -hy, hx, hy];
+  if (osm.failed) missingTiles += osm.failed;
   return ctx;
 }
+let missingTiles = 0;
 async function run() {
   if (!startLL) { status('Najpierw wybierz start: wpisz miejsce, użyj lokalizacji albo dotknij mapy.', true); return; }
+  missingTiles = 0;
   const D = Math.max(3, Math.min(200, +$('dist').value || 15)) * 1000, prof = act;
   const tolV = $('tol').value, radius = tolV[0] === 'r' ? +tolV.slice(1) : 0, tol = radius ? 300 : +tolV;
   const dir = selectedDirs();
@@ -300,7 +307,7 @@ async function runLocal(preps, D, prof, dir, tol) {
   if (reuse) ctx = cache;
   else {
     progress(0.05); status(`Pobieram drogi i ścieżki z OpenStreetMap (obszar ok. ${Math.round((2 * half / 1000) ** 2)} km²)… To może potrwać do minuty.`);
-    ctx = await loadCtx(startLL, half, prof, false); cache = ctx;
+    ctx = await loadCtx(startLL, half, prof, false); if (!missingTiles) cache = ctx;
   }
   const st = ctx.proj.fwd(startLL[0], startLL[1]);
   let chosen = preps;
@@ -322,7 +329,7 @@ async function runRadius(preps, D, prof, dir, radius) {
   // Etap 1: główne drogi w całym promieniu, ocena położeń
   const halfC = Math.min(radius + maxHalf(preps, D, 0) * 0.7, 75000);
   progress(0.05); status(`Etap 1/2: pobieram główne drogi w promieniu ${radius / 1000} km (obszar ok. ${Math.round((2 * halfC / 1000) ** 2)} km²)… To może potrwać 1-2 minuty.`);
-  const cctx = await loadCtx(startLL, halfC, prof, true);
+  const cctx = await loadCtx(startLL, halfC, prof, true, 'Etap 1/2: główne drogi');
   cctx.nearW = 0.15; cctx.nSamp = 60;
   const st = [0, 0];
   const best = [];
@@ -346,11 +353,13 @@ async function runRadius(preps, D, prof, dir, radius) {
   // Etap 2: pełne dane i trasy w wybranych obszarach
   for (let k = 0; k < areas.length; k++) {
     const a = areas[k];
-    const ll = cctx.proj.inv(a.cx, a.cy);
-    const half = Math.min(Math.max(...a.items.map(b => b.sp.ext * b.pl.s)) * 0.85 + 2500, 40000);
-    status(`Etap 2/2: pobieram szczegółowe drogi dla miejsca ${k + 1}/${areas.length} (ok. ${haversine(startLL, ll).toFixed(0)} km od Ciebie)…`);
+    let mnx = Infinity, mny = Infinity, mxx = -Infinity, mxy = -Infinity, Emax = 0;
+    for (const b of a.items) { const tf = placeFn(b.pl); Emax = Math.max(Emax, b.sp.ext * b.pl.s); for (const q of b.sp.path) { const p = tf(q); mnx = Math.min(mnx, p[0]); mxx = Math.max(mxx, p[0]); mny = Math.min(mny, p[1]); mxy = Math.max(mxy, p[1]); } }
+    const mg = Math.max(1500, 0.12 * Emax);
+    const ll = cctx.proj.inv((mnx + mxx) / 2, (mny + mxy) / 2);
+    const hx = Math.min((mxx - mnx) / 2 + mg, 40000), hy = Math.min((mxy - mny) / 2 + mg, 40000);
     let ctx;
-    try { ctx = await loadCtx(ll, half, prof, false); } catch (e) { console.error(e); continue; }
+    try { ctx = await loadCtx(ll, hx, prof, false, `Etap 2/2, miejsce ${k + 1}/${areas.length} (ok. ${haversine(startLL, ll).toFixed(0)} km od Ciebie)`, hy); } catch (e) { console.error(e); continue; }
     for (const b of a.items) {
       status(`Etap 2/2: układam trasę ${b.sp.name}…`); await tick();
       try {
@@ -372,16 +381,18 @@ async function runRadius(preps, D, prof, dir, radius) {
 let lastChosen = 0;
 function finish(preps, D) {
   progress(null);
+  const miss = missingTiles ? ` Uwaga: ${missingTiles} ${missingTiles === 1 ? 'fragment mapy się nie pobrał' : 'fragmenty mapy się nie pobrały'} (przeciążony serwer), więc część obszaru pominąłem.` : '';
   const MIN_FIT = 60;
   if (preps.length > 1) {
     const good = results.filter(r => r.fit >= MIN_FIT && Math.abs(r.total - D) / D < 0.25);
     const dropped = results.length - good.length;
     if (good.length) { results = good; renderResults(); }
     else { results = results.slice(0, 3); renderResults(); }
-    if (!results.length) status('Nie udało się ułożyć trasy. Spróbuj innego dystansu lub miejsca.', true);
+    if (!results.length) status((missingTiles ? 'Nie udało się pobrać części map: serwery OpenStreetMap są teraz przeciążone. Spróbuj za kilka-kilkanaście minut.' : 'Nie udało się ułożyć trasy. Spróbuj innego dystansu lub miejsca.'), true);
     else status(good.length
       ? `Sprawdziłem ${preps.length} kształtów. Najlepiej pasujące do dróg: ${good.length}${dropped ? ` (z ${lastChosen} ułożonych odrzuciłem ${dropped} słabszych)` : ''}. Konkretny kształt możesz też wybrać z listy.`
-      : 'Żaden kształt nie pasuje tu dobrze. Pokazuję trzy najlepsze. Spróbuj innego kierunku, dystansu albo większego promienia.', !good.length);
+      : 'Żaden kształt nie pasuje tu dobrze. Pokazuję trzy najlepsze. Spróbuj innego kierunku, dystansu albo większego promienia.' + miss, !good.length);
+    if (good.length && miss) $('status').textContent += miss;
     if (results.length) select(0);
   } else {
     if (!results.length) status('Nie udało się ułożyć trasy. Spróbuj innego dystansu lub miejsca.', true);
