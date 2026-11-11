@@ -292,11 +292,12 @@ function evalPlacement(sp, samp, pl, ctx, start, tol) {
   const dm = Math.sqrt(dmin);
   return Math.sqrt(sum / samp.length) / tau + (ctx.nearW != null ? ctx.nearW : 1.2) * dm / E + Math.max(0, dm - tol) / tau;
 }
+// dir: null (dowolny), kąt w radianach albo lista kątów; środek kształtu musi leżeć w którymś z sektorów
 function dirOk(dx, dy, dir, E) {
-  if (dir == null) return true;
+  if (dir == null || (Array.isArray(dir) && !dir.length)) return true;
   const r = hyp(dx, dy); if (r < 0.2 * E) return false;
-  let a = Math.atan2(dy, dx) - dir; a = Math.atan2(Math.sin(a), Math.cos(a));
-  return Math.abs(a) <= 50 * Math.PI / 180;
+  const dirs = Array.isArray(dir) ? dir : [dir], half = (dirs.length > 1 ? 30 : 45) * Math.PI / 180;
+  return dirs.some(d => { let a = Math.atan2(dy, dx) - d; a = Math.atan2(Math.sin(a), Math.cos(a)); return Math.abs(a) <= half; });
 }
 function searchShape(sp, ctx, start, D, tol, dir) {
   const samp = resample(sp.path, ctx.nSamp || 110);
