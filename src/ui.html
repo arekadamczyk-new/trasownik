@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>Trasownik – trasy w kształtach</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+  :root { --acc:#e5531a; --ink:#1d1d1f; --mut:#6b6b70; --bg:#fff; --line:#e4e4e7; }
+  * { box-sizing:border-box; }
+  html,body { margin:0; height:100%; font:15px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; color:var(--ink); }
+  #map { position:fixed; inset:0; }
+  .panel { position:fixed; z-index:1000; background:var(--bg); box-shadow:0 4px 24px rgba(0,0,0,.18); overflow:auto; }
+  @media (min-width:800px) { .panel { top:12px; left:12px; bottom:12px; width:370px; border-radius:14px; } }
+  @media (max-width:799px) { .panel { left:0; right:0; bottom:0; max-height:58vh; border-radius:16px 16px 0 0; } .panel.min { max-height:64px; overflow:hidden; } }
+  .head { display:flex; align-items:center; justify-content:space-between; padding:12px 16px 4px; position:sticky; top:0; background:var(--bg); z-index:2; }
+  .head h1 { font-size:18px; margin:0; }
+  .head button { border:0; background:none; font-size:14px; color:var(--mut); padding:6px; }
+  .sec { padding:6px 16px 10px; }
+  label.t { display:block; font-size:12px; font-weight:600; color:var(--mut); text-transform:uppercase; letter-spacing:.04em; margin:10px 0 5px; }
+  .row { display:flex; gap:8px; align-items:center; }
+  input[type=text], input[type=number], select { width:100%; padding:9px 10px; border:1px solid var(--line); border-radius:9px; font:inherit; background:#fff; }
+  button.b { padding:9px 12px; border:1px solid var(--line); border-radius:9px; background:#f6f6f7; font:inherit; white-space:nowrap; cursor:pointer; }
+  button.main { width:100%; margin-top:14px; padding:12px; border:0; border-radius:10px; background:var(--acc); color:#fff; font-weight:600; font-size:16px; cursor:pointer; }
+  button.main:disabled { opacity:.5; }
+  .seg { display:flex; border:1px solid var(--line); border-radius:9px; overflow:hidden; }
+  .seg button { flex:1; border:0; background:#fff; padding:9px; font:inherit; cursor:pointer; }
+  .seg button.on { background:var(--ink); color:#fff; }
+  .hint { font-size:12.5px; color:var(--mut); margin-top:5px; }
+  #status { font-size:13px; color:var(--mut); margin-top:10px; min-height:18px; }
+  #status.err { color:#b42318; }
+  .bar { height:4px; background:var(--line); border-radius:2px; overflow:hidden; margin-top:6px; display:none; }
+  .bar i { display:block; height:100%; width:0; background:var(--acc); transition:width .2s; }
+  .card { display:flex; gap:10px; padding:10px; border:1px solid var(--line); border-radius:11px; margin-top:8px; cursor:pointer; align-items:center; }
+  .card.on { border-color:var(--acc); box-shadow:0 0 0 1px var(--acc) inset; }
+  .card svg { flex:0 0 64px; height:64px; background:#fafafa; border-radius:8px; }
+  .card .nm { font-weight:600; }
+  .card .fn { font-size:12.5px; color:var(--mut); }
+  .card .st { font-size:12.5px; margin-top:2px; }
+  .fitb { display:inline-block; padding:1px 6px; border-radius:6px; font-size:12px; font-weight:600; background:#fde7dd; color:#9a3412; }
+  #detail { display:none; margin-top:12px; padding:12px; background:#f6f6f7; border-radius:11px; }
+  #detail .big { font-size:16px; font-weight:600; }
+  #detail .chk { display:flex; gap:6px; align-items:center; font-size:13.5px; margin:8px 0; }
+  .leg { font-size:12px; color:var(--mut); margin-top:6px; }
+  .leg span { display:inline-block; width:18px; height:0; border-top:3px solid; vertical-align:middle; margin-right:4px; }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div class="panel" id="panel">
+  <div class="head"><h1>Trasownik</h1><button id="tog">zwiń</button></div>
+  <div class="sec">
+    <label class="t">Start</label>
+    <div class="row"><input type="text" id="q" placeholder="np. Kraków, Rynek Główny"><button class="b" id="qb">Szukaj</button></div>
+    <div class="row" style="margin-top:6px"><button class="b" id="geo">📍 Moja lokalizacja</button><span class="hint" style="margin:0">albo dotknij mapy</span></div>
+    <div class="hint" id="startTxt">Nie wybrano startu.</div>
+
+    <label class="t">Dystans całkowity (km)</label>
+    <div class="row"><input type="number" id="dist" min="3" max="120" step="1" value="15"></div>
+
+    <label class="t">Aktywność</label>
+    <div class="seg" id="act"><button data-v="run" class="on">🏃 Bieg</button><button data-v="bike">🚴 Rower</button></div>
+
+    <label class="t">Co narysować</label>
+    <select id="what"></select>
+    <input type="text" id="txt" placeholder="Twój napis, np. XD albo imię" style="display:none;margin-top:6px" maxlength="12">
+
+    <label class="t">Start może leżeć od kształtu</label>
+    <select id="tol"><option value="300">na trasie (do 300 m)</option><option value="1000" selected>do 1 km</option><option value="2500">do 2,5 km</option><option value="5000">do 5 km</option></select>
+    <div class="hint">Większa swoboda daje lepsze dopasowanie, ale wydłuża dojazd.</div>
+
+    <button class="main" id="go">Znajdź trasy</button>
+    <div class="bar" id="bar"><i></i></div>
+    <div id="status"></div>
+
+    <div id="results"></div>
+    <div id="detail">
+      <div class="big" id="dName"></div>
+      <div id="dStats" style="font-size:13.5px;margin-top:4px"></div>
+      <label class="chk"><input type="checkbox" id="withAppr" checked> Dolicz dojazd i powrót do pliku</label>
+      <button class="b" id="gpx" style="width:100%;background:var(--ink);color:#fff;border:0">Pobierz GPX</button>
+      <div class="leg"><span style="border-color:var(--acc)"></span>trasa &nbsp; <span style="border-color:#999;border-top-style:dashed"></span>kształt wzorcowy &nbsp; <span style="border-color:#2563eb;border-top-style:dashed"></span>dojazd</div>
+      <div class="hint">Plik zaimportujesz w Stravie, Garminie Connect lub Komoocie. Sprawdź trasę przed wyjściem: dane OSM bywają nieaktualne, a algorytm nie zna natężenia ruchu.</div>
+    </div>
+  </div>
+</div>
+<script>
+/*CORE*/
+</script>
+<script>
+(() => {
+const $ = id => document.getElementById(id);
+const map = L.map('map', { zoomControl: true }).setView([52.07, 19.48], 6);
+const osmLayer = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  maxZoom: 19, attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+}).addTo(map);
+const topoLayer = L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', {
+  maxZoom: 17, subdomains: 'abc', attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>, <a href="https://opentopomap.org">OpenTopoMap</a> (CC-BY-SA)'
+});
+L.control.layers({ 'Mapa': osmLayer, 'Topograficzna': topoLayer }, null, { position: 'topright' }).addTo(map);
+
+let startLL = null, startMarker = null, act = 'run', cache = null, results = [], sel = -1, layers = null;
+
+// --- wybór kształtu
+const what = $('what');
+what.innerHTML = '<option value="__all">✨ Zaskocz mnie (kształty i śmieszne napisy)</option>' +
+  SHAPES.map(s => `<option value="${s.id}">${s.name}</option>`).join('') + '<option value="__txt">✍️ Własny napis</option>';
+what.onchange = () => { $('txt').style.display = what.value === '__txt' ? 'block' : 'none'; };
+
+$('act').onclick = e => { const b = e.target.closest('button'); if (!b) return; act = b.dataset.v; [...$('act').children].forEach(x => x.classList.toggle('on', x === b)); if (act === 'bike' && +$('dist').value < 25) $('dist').value = 40; if (act === 'run' && +$('dist').value > 40) $('dist').value = 15; };
+$('tog').onclick = () => { const p = $('panel'); p.classList.toggle('min'); $('tog').textContent = p.classList.contains('min') ? 'rozwiń' : 'zwiń'; };
+
+function setStart(lat, lon, label) {
+  startLL = [lat, lon];
+  if (!startMarker) {
+    startMarker = L.marker(startLL, { draggable: true, title: 'Start', icon: L.divIcon({ className: '', html: '<div style="width:18px;height:18px;border-radius:50%;background:#16a34a;border:3px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.5)"></div>', iconSize: [18, 18], iconAnchor: [9, 9] }) }).addTo(map);
+    startMarker.on('dragend', () => { const p = startMarker.getLatLng(); setStart(p.lat, p.lng); });
+  } else startMarker.setLatLng(startLL);
+  $('startTxt').textContent = (label ? label + ' · ' : '') + lat.toFixed(5) + ', ' + lon.toFixed(5);
+}
+map.on('click', e => { setStart(e.latlng.lat, e.latlng.lng, 'Wybrano na mapie'); });
+
+function status(t, err) { const s = $('status'); s.textContent = t; s.className = err ? 'err' : ''; }
+function progress(f) { const b = $('bar'); if (f == null) { b.style.display = 'none'; return; } b.style.display = 'block'; b.firstElementChild.style.width = Math.round(f * 100) + '%'; }
+const tick = () => new Promise(r => setTimeout(r, 0));
+
+async function geocode(q) {
+  try {
+    const r = await fetch('https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&accept-language=pl&q=' + encodeURIComponent(q));
+    const j = await r.json(); if (j[0]) return { lat: +j[0].lat, lon: +j[0].lon, name: j[0].display_name.split(',').slice(0, 2).join(',') };
+  } catch (e) {}
+  const r = await fetch('https://photon.komoot.io/api/?limit=1&q=' + encodeURIComponent(q));
+  const j = await r.json(); const f = j.features && j.features[0];
+  if (f) return { lat: f.geometry.coordinates[1], lon: f.geometry.coordinates[0], name: f.properties.name };
+  return null;
+}
+$('qb').onclick = async () => {
+  const q = $('q').value.trim(); if (!q) return;
+  status('Szukam miejsca…');
+  try { const g = await geocode(q); if (!g) { status('Nie znalazłem takiego miejsca.', true); return; } setStart(g.lat, g.lon, g.name); map.setView([g.lat, g.lon], 13); status(''); }
+  catch (e) { status('Wyszukiwanie nie działa: ' + e.message, true); }
+};
+$('q').onkeydown = e => { if (e.key === 'Enter') $('qb').click(); };
+$('geo').onclick = () => {
+  if (!navigator.geolocation) { status('Przeglądarka nie udostępnia lokalizacji.', true); return; }
+  status('Ustalam lokalizację…');
+  navigator.geolocation.getCurrentPosition(p => { setStart(p.coords.latitude, p.coords.longitude, 'Twoja lokalizacja'); map.setView(startLL, 13); status(''); },
+    e => status('Brak dostępu do lokalizacji (' + e.message + '). Wpisz miejsce albo dotknij mapy.', true), { enableHighAccuracy: true, timeout: 15000 });
+};
+
+// --- pobranie dróg z OSM
+const OVERPASS = ['https://overpass-api.de/api/interpreter', 'https://overpass.kumi.systems/api/interpreter', 'https://overpass.private.coffee/api/interpreter'];
+function highwayFilter(bike, areaKm2) {
+  let t = ['primary', 'primary_link', 'secondary', 'secondary_link', 'tertiary', 'tertiary_link', 'unclassified', 'residential', 'living_street', 'track', 'cycleway'];
+  if (!bike) t.push('pedestrian');
+  if (areaKm2 <= 250) t.push('path');
+  if (areaKm2 <= 80) { t.push('service'); if (!bike) t.push('footway', 'steps'); }
+  return t;
+}
+async function fetchRoads(bboxLL, bike, areaKm2) {
+  const [s, w, n, e] = bboxLL;
+  const types = highwayFilter(bike, areaKm2).join('|');
+  const extra = bike ? '["bicycle"!~"^(no|dismount)$"]' : '["foot"!~"^(no)$"]';
+  const q = `[out:json][timeout:170][maxsize:536870912];way["highway"~"^(${types})$"]["access"!~"^(private|no)$"]["area"!="yes"]${extra}(${s},${w},${n},${e});out geom qt;`;
+  let lastErr;
+  for (const url of OVERPASS) {
+    try {
+      const ctl = new AbortController(); const to = setTimeout(() => ctl.abort(), 180000);
+      const r = await fetch(url, { method: 'POST', body: 'data=' + encodeURIComponent(q), headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, signal: ctl.signal });
+      clearTimeout(to);
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return await r.json();
+    } catch (e) { lastErr = e; status('Serwer OSM nie odpowiedział, próbuję innego…'); }
+  }
+  throw new Error('Nie udało się pobrać dróg (' + (lastErr && lastErr.message) + ').');
+}
+
+// --- główny przebieg
+$('go').onclick = run;
+async function run() {
+  if (!startLL) { status('Najpierw wybierz start: wpisz miejsce, użyj lokalizacji albo dotknij mapy.', true); return; }
+  const D = Math.max(3, Math.min(120, +$('dist').value || 15)) * 1000, tol = +$('tol').value, bike = act === 'bike';
+  let list;
+  if (what.value === '__all') list = D <= 50000 ? SHAPES.concat(FUN_WORDS.map(textShape)) : SHAPES.slice();
+  else if (what.value === '__txt') { const t = textShape($('txt').value.trim()); if (!t) { status('Wpisz napis z liter lub cyfr.', true); return; } list = [t]; }
+  else list = SHAPES.filter(s => s.id === what.value);
+  const preps = list.map(prepShape);
+  // wymagany obszar
+  let half = 0;
+  for (const sp of preps) { const E = sp.ext * D * sp.lenFactor / sp.L * 1.12; half = Math.max(half, 1.2 * E + tol + 400); }
+  half = Math.min(half, 30000);
+  $('go').disabled = true; clearResults();
+  try {
+    let ctx;
+    const reuse = cache && cache.bike === bike && (() => { const p = cache.proj.fwd(startLL[0], startLL[1]); const b = cache.bboxM; return p[0] - half >= b[0] && p[0] + half <= b[2] && p[1] - half >= b[1] && p[1] + half <= b[3]; })();
+    if (reuse) ctx = cache;
+    else {
+      const proj = makeProj(startLL[0], startLL[1]);
+      const sw = proj.inv(-half, -half), ne = proj.inv(half, half);
+      const area = (2 * half / 1000) ** 2;
+      progress(0.05); status(`Pobieram drogi i ścieżki z OpenStreetMap (obszar ok. ${Math.round(area)} km²)… To może potrwać do minuty.`);
+      const osm = await fetchRoads([sw[0], sw[1], ne[0], ne[1]], bike, area);
+      progress(0.3); status('Buduję sieć dróg…'); await tick();
+      ctx = buildContext(osm, proj, bike, [-half, -half, half, half]);
+      ctx.proj = proj; ctx.bike = bike; ctx.bboxM = [-half, -half, half, half];
+      cache = ctx;
+    }
+    const st = ctx.proj.fwd(startLL[0], startLL[1]);
+    let chosen = preps;
+    if (preps.length > 1) {
+      status('Sprawdzam, które kształty pasują do okolicy…');
+      const sc = [];
+      for (let i = 0; i < preps.length; i++) { await tick(); const t = searchShape(preps[i], ctx, st, D, tol); sc.push({ sp: preps[i], s: t[0] ? t[0].score : 1e9 }); progress(0.3 + 0.2 * (i + 1) / preps.length); }
+      sc.sort((a, b) => a.s - b.s);
+      chosen = sc.slice(0, 7).map(x => x.sp);
+    }
+    for (let i = 0; i < chosen.length; i++) {
+      status(`Układam trasę: ${chosen[i].name} (${i + 1}/${chosen.length})…`); await tick();
+      try { const r = planRoute(chosen[i], ctx, st, D, tol); if (r && r.coords.length > 2) { results.push(r); renderResults(); } } catch (e) { console.error(e); }
+      progress(0.5 + 0.5 * (i + 1) / chosen.length);
+    }
+    progress(null);
+    if (!results.length) status('Nie udało się ułożyć trasy. Spróbuj innego dystansu lub miejsca.', true);
+    else { status(`Gotowe. Najlepsze dopasowanie: ${results[0].sp.name}. Dotknij propozycji, żeby ją obejrzeć.`); select(0); }
+  } catch (e) { console.error(e); progress(null); status(e.message, true); }
+  $('go').disabled = false;
+}
+
+function clearResults() { results = []; sel = -1; $('results').innerHTML = ''; $('detail').style.display = 'none'; if (layers) { map.removeLayer(layers); layers = null; } }
+function km(m) { return (m / 1000).toFixed(1).replace('.', ','); }
+function mini(r) {
+  const all = r.coords; const xs = all.map(p => p[0]), ys = all.map(p => p[1]);
+  const mnx = Math.min(...xs), mxx = Math.max(...xs), mny = Math.min(...ys), mxy = Math.max(...ys), sc = 52 / Math.max(mxx - mnx, mxy - mny, 1);
+  const ox = (64 - (mxx - mnx) * sc) / 2, oy = (64 - (mxy - mny) * sc) / 2;
+  const pts = all.filter((_, i) => i % 2 === 0 || i === all.length - 1).map(p => ((p[0] - mnx) * sc + ox).toFixed(1) + ',' + ((mxy - p[1]) * sc + oy).toFixed(1)).join(' ');
+  return `<svg viewBox="0 0 64 64"><polyline points="${pts}" fill="none" stroke="#e5531a" stroke-width="1.6" stroke-linejoin="round"/></svg>`;
+}
+function renderResults() {
+  const cur = sel >= 0 ? results[sel] : null;
+  results.sort((a, b) => b.rank - a.rank);
+  sel = cur ? results.indexOf(cur) : -1;
+  $('results').innerHTML = results.map((r, i) => `<div class="card${i === sel ? ' on' : ''}" data-i="${i}">${mini(r)}<div><div class="nm">${r.sp.name} <span class="fitb">${r.fit}%</span></div><div class="fn">${r.sp.fun}</div><div class="st">${km(r.total)} km${r.apprLen > 50 ? ' (w tym dojazd ' + km(r.apprLen) + ' km)' : ''}</div></div></div>`).join('');
+  [...$('results').children].forEach(c => c.onclick = () => select(+c.dataset.i));
+}
+function select(i) {
+  sel = i; const r = results[i]; const P = ctxProj();
+  [...$('results').children].forEach((c, k) => c.classList.toggle('on', k === i));
+  if (layers) map.removeLayer(layers);
+  const ll = a => a.map(p => P.inv(p[0], p[1]));
+  layers = L.layerGroup([
+    L.polyline(ll(r.placedPath), { color: '#888', weight: 3, dashArray: '6 6', opacity: .8 }),
+    L.polyline(ll(r.toCoords), { color: '#2563eb', weight: 4, dashArray: '6 6' }),
+    L.polyline(ll(r.backCoords), { color: '#2563eb', weight: 4, dashArray: '6 6' }),
+    L.polyline(ll(r.coords), { color: '#e5531a', weight: 5, opacity: .9 }),
+  ]).addTo(map);
+  map.fitBounds(L.polyline(ll(r.coords.concat(r.toCoords))).getBounds(), { padding: [30, 30] });
+  $('detail').style.display = 'block';
+  $('dName').textContent = r.sp.name + ' · dopasowanie ' + r.fit + '%';
+  $('dStats').innerHTML = `Rysunek: <b>${km(r.drawLen)} km</b>${r.apprLen > 50 ? ` · dojazd i powrót: <b>${km(r.apprLen)} km</b>` : ''} · razem: <b>${km(r.total)} km</b><br>Średnie odchylenie od wzoru: ok. ${Math.round((r.devRoute + r.devShape) / 2)} m${r.wrongM > 20 ? `<br><b style="color:#b42318">Uwaga: ok. ${Math.round(r.wrongM)} m pod prąd ulicy jednokierunkowej. Sprawdź ten fragment lub przeprowadź tam rower.</b>` : ''}`;
+}
+function ctxProj() { return cache.proj; }
+$('gpx').onclick = () => {
+  const r = results[sel]; if (!r) return; const P = ctxProj();
+  let seq = r.coords; if ($('withAppr').checked) seq = r.toCoords.concat(r.coords.slice(1), r.backCoords.slice(1));
+  const name = 'Trasownik – ' + r.sp.name.replace(/[„”]/g, '') + ' ' + km(r.total) + ' km';
+  const pts = seq.map(p => { const [la, lo] = P.inv(p[0], p[1]); return `<trkpt lat="${la.toFixed(6)}" lon="${lo.toFixed(6)}"></trkpt>`; }).join('\n');
+  const gpx = `<?xml version="1.0" encoding="UTF-8"?>\n<gpx version="1.1" creator="Trasownik" xmlns="http://www.topografix.com/GPX/1/1">\n<metadata><name>${name}</name></metadata>\n<trk><name>${name}</name><type>${act === 'bike' ? 'cycling' : 'running'}</type><trkseg>\n${pts}\n</trkseg></trk>\n</gpx>`;
+  const blob = new Blob([gpx], { type: 'application/gpx+xml' });
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
+  a.download = 'trasa-' + r.sp.name.toLowerCase().replace(/[^a-z0-9ąćęłńóśźż]+/g, '') + '-' + Math.round(r.total / 1000) + 'km.gpx';
+  document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+};
+})();
+</script>
+</body>
+</html>
