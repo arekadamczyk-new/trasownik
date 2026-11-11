@@ -25,7 +25,7 @@
   button.main { width:100%; margin-top:14px; padding:12px; border:0; border-radius:10px; background:var(--acc); color:#fff; font-weight:600; font-size:16px; cursor:pointer; }
   button.main:disabled { opacity:.5; }
   .seg { display:flex; border:1px solid var(--line); border-radius:9px; overflow:hidden; }
-  .seg button { flex:1; border:0; background:#fff; padding:9px; font:inherit; cursor:pointer; }
+  .seg button { flex:1; border:0; background:#fff; padding:9px 4px; font:inherit; font-size:13.5px; cursor:pointer; }
   .seg button.on { background:var(--ink); color:#fff; }
   .hint { font-size:12.5px; color:var(--mut); margin-top:5px; }
   #status { font-size:13px; color:var(--mut); margin-top:10px; min-height:18px; }
@@ -49,26 +49,30 @@
 <body>
 <div id="map"></div>
 <div class="panel" id="panel">
-  <div class="head"><h1>Trasownik</h1><button id="tog">zwiń</button></div>
+  <div class="head"><h1>Trasownik</h1><span><button id="gpx2" style="display:none;color:#e5531a;font-weight:600">⬇ GPX</button><button id="tog">zwiń</button></span></div>
   <div class="sec">
     <label class="t">Start</label>
-    <div class="row"><input type="text" id="q" placeholder="np. Kraków, Rynek Główny"><button class="b" id="qb">Szukaj</button></div>
+    <div class="row"><input type="text" id="q" placeholder="adres, miejscowość lub 52.08, 20.87"><button class="b" id="qb">Szukaj</button></div>
     <div class="row" style="margin-top:6px"><button class="b" id="geo">📍 Moja lokalizacja</button><span class="hint" style="margin:0">albo dotknij mapy</span></div>
     <div class="hint" id="startTxt">Nie wybrano startu.</div>
 
     <label class="t">Dystans całkowity (km)</label>
-    <div class="row"><input type="number" id="dist" min="3" max="120" step="1" value="15"></div>
+    <div class="row"><input type="number" id="dist" min="3" max="200" step="1" value="15"></div>
 
     <label class="t">Aktywność</label>
-    <div class="seg" id="act"><button data-v="run" class="on">🏃 Bieg</button><button data-v="bike">🚴 Rower</button></div>
+    <div class="seg" id="act"><button data-v="run" class="on">🏃 Bieg</button><button data-v="road">Szosa</button><button data-v="touring">Turystyczny</button><button data-v="gravel">Gravel/MTB</button></div>
+    <div class="hint" id="actHint"></div>
 
     <label class="t">Co narysować</label>
     <select id="what"></select>
     <input type="text" id="txt" placeholder="Twój napis, np. XD albo imię" style="display:none;margin-top:6px" maxlength="12">
 
-    <label class="t">Start może leżeć od kształtu</label>
-    <select id="tol"><option value="300">na trasie (do 300 m)</option><option value="1000" selected>do 1 km</option><option value="2500">do 2,5 km</option><option value="5000">do 5 km</option></select>
-    <div class="hint">Większa swoboda daje lepsze dopasowanie, ale wydłuża dojazd.</div>
+    <label class="t">Kierunek od startu</label>
+    <select id="dir"><option value="">dowolny</option><option value="90">północ</option><option value="45">północny wschód</option><option value="0">wschód</option><option value="-45">południowy wschód</option><option value="-90">południe</option><option value="-135">południowy zachód</option><option value="180">zachód</option><option value="135">północny zachód</option></select>
+
+    <label class="t">Dojazd do kształtu (w jedną stronę)</label>
+    <select id="tol"><option value="300">start na trasie (do 300 m)</option><option value="1000" selected>do 1 km</option><option value="2500">do 2,5 km</option><option value="5000">do 5 km</option></select>
+    <div class="hint">Dłuższy dojazd daje więcej miejsc do wyboru, ale zabiera część dystansu.</div>
 
     <button class="main" id="go">Znajdź trasy</button>
     <div class="bar" id="bar"><i></i></div>
@@ -257,16 +261,54 @@ function fieldAt(g, f, X, Y, cap) {
 }
 function rasterPolyField(g, pts) { const f = newField(g); for (let i = 1; i < pts.length; i++) rasterSeg(g, f, pts[i - 1][0], pts[i - 1][1], pts[i][0], pts[i][1]); return chamfer(g, f); }
 
+// ---------- Profile aktywności: waga krawędzi (0 = wykluczona) ----------
+const UNPAVED = /^(unpaved|gravel|fine_gravel|dirt|earth|ground|grass|sand|mud|compacted|pebblestone|woodchips|grass_paver|rock|stone|soil|clay)$/;
+const BAD_SMOOTH = /^(bad|very_bad|horrible|very_horrible|impassable)$/;
+const PROFILES = {
+  run: { name: 'Bieg', oneway: false, w(t) {
+    const h = t.highway;
+    return { primary: 2.2, primary_link: 2.2, secondary: 1.6, secondary_link: 1.6, tertiary: 1.2, tertiary_link: 1.2, steps: 3, service: 1.3 }[h] || 1;
+  } },
+  road: { name: 'Szosa', oneway: true, w(t) {
+    const h = t.highway, s = t.surface || '';
+    if (UNPAVED.test(s) || t.tracktype || BAD_SMOOTH.test(t.smoothness || '')) return 0;
+    let w = { primary: 1.8, primary_link: 1.8, secondary: 1.2, secondary_link: 1.2, tertiary: 1, tertiary_link: 1, unclassified: 1.05, residential: 1.3, living_street: 1.6, service: 2, cycleway: 1 }[h];
+    if (!w) return 0;
+    if (/^(sett|cobblestone|unhewn_cobblestone)$/.test(s)) w *= 3;
+    else if (s === 'paving_stones') w *= 1.3;
+    if (!s && /^(unclassified|residential|service|living_street)$/.test(h)) w *= 1.6; // brak informacji o nawierzchni
+    return w;
+  } },
+  touring: { name: 'Turystyczny', oneway: true, w(t) {
+    const h = t.highway, s = t.surface || '';
+    if (/^(sand|mud|grass|dirt|earth|ground|rock|woodchips|soil|clay)$/.test(s) || /grade[345]/.test(t.tracktype || '') || BAD_SMOOTH.test(t.smoothness || '')) return 0;
+    if (h === 'path' && !/^(designated|yes)$/.test(t.bicycle || '')) return 0;
+    let w = { primary: 2, primary_link: 2, secondary: 1.4, secondary_link: 1.4, tertiary: 1.1, tertiary_link: 1.1, unclassified: 1, residential: 1.2, living_street: 1.4, service: 1.8, cycleway: 0.9, track: 1.15, path: 1.1 }[h];
+    if (!w) return 0;
+    if (/^(sett|cobblestone|unhewn_cobblestone)$/.test(s)) w *= 2.5;
+    return w;
+  } },
+  gravel: { name: 'Gravel/MTB', oneway: true, w(t) {
+    const h = t.highway, s = t.surface || '';
+    if (s === 'mud') return 0;
+    let w = { primary: 2.5, primary_link: 2.5, secondary: 1.8, secondary_link: 1.8, tertiary: 1.3, tertiary_link: 1.3, unclassified: 1, residential: 1.2, living_street: 1.4, service: 1.6, cycleway: 1, track: 0.85, path: 0.95, bridleway: 1.2, footway: 1.8 }[h];
+    if (!w) return 0;
+    if (s === 'sand') w *= 2;
+    return w;
+  } },
+};
+
 // ---------- Graf dróg z odpowiedzi Overpass ----------
-function buildGraph(osm, proj, bike) {
+function buildGraph(osm, proj, prof) {
   const idx = new Map(), xs = [], ys = [];
-  const eA = [], eB = [], eDir = []; // eDir: 0 obie strony, 1 tylko A->B
+  const eA = [], eB = [], eDir = [], eW = []; // eDir: 0 obie strony, 1 tylko A->B
   function nodeId(key, lat, lon) { let i = idx.get(key); if (i === undefined) { i = xs.length; idx.set(key, i); const p = proj.fwd(lat, lon); xs.push(p[0]); ys.push(p[1]); } return i; }
   for (const el of osm.elements || []) {
     if (el.type !== 'way' || !el.geometry) continue;
     const t = el.tags || {};
+    const wt = prof.w(t); if (!wt) continue;
     let dir = 0;
-    if (bike) {
+    if (prof.oneway) {
       const ow = t.oneway, obn = t['oneway:bicycle'] === 'no' || t['cycleway'] === 'opposite' || t['cycleway'] === 'opposite_lane';
       if (!obn && (ow === 'yes' || ow === '1' || t.junction === 'roundabout')) dir = 1;
       if (!obn && ow === '-1') dir = -1;
@@ -278,6 +320,7 @@ function buildGraph(osm, proj, bike) {
       const i = nodeId(key, gpt.lat, gpt.lon);
       if (prev >= 0 && prev !== i) {
         if (dir === -1) { eA.push(i); eB.push(prev); eDir.push(1); } else { eA.push(prev); eB.push(i); eDir.push(dir); }
+        eW.push(wt);
       }
       prev = i;
     }
@@ -285,13 +328,13 @@ function buildGraph(osm, proj, bike) {
   const n = xs.length, deg = new Int32Array(n + 1);
   for (let e = 0; e < eA.length; e++) { deg[eA[e]]++; deg[eB[e]]++; }
   const start = new Int32Array(n + 1); for (let i = 0; i < n; i++) start[i + 1] = start[i] + deg[i];
-  const m = start[n], to = new Int32Array(m), len = new Float32Array(m), wrong = new Uint8Array(m), fill = start.slice(0, n);
+  const m = start[n], to = new Int32Array(m), len = new Float32Array(m), wrong = new Uint8Array(m), base = new Float32Array(m), fill = start.slice(0, n);
   const X = Float64Array.from(xs), Y = Float64Array.from(ys);
   for (let e = 0; e < eA.length; e++) {
     const a = eA[e], b = eB[e], L = hyp(X[a] - X[b], Y[a] - Y[b]);
-    to[fill[a]] = b; len[fill[a]++] = L;
-    if (!eDir[e]) { to[fill[b]] = a; len[fill[b]++] = L; }
-    else { to[fill[b]] = a; wrong[fill[b]] = 1; len[fill[b]++] = L * 15; } // pod prąd: tylko awaryjnie
+    to[fill[a]] = b; len[fill[a]] = L; base[fill[a]++] = L * eW[e];
+    if (!eDir[e]) { to[fill[b]] = a; len[fill[b]] = L; base[fill[b]++] = L * eW[e]; }
+    else { to[fill[b]] = a; wrong[fill[b]] = 1; len[fill[b]] = L; base[fill[b]++] = L * eW[e] * 15; } // pod prąd: tylko awaryjnie
   }
   // największa składowa spójności (nieskierowana)
   const und = new Map();
@@ -306,7 +349,7 @@ function buildGraph(osm, proj, bike) {
     cid++;
   }
   const inMain = new Uint8Array(n); for (let i = 0; i < n; i++) inMain[i] = comp[i] === best ? 1 : 0;
-  return { n, X, Y, start, to, len, wrong, inMain, edges: { eA, eB }, mainSize: bestSize };
+  return { n, X, Y, start, to, len, base, wrong, inMain, edges: { eA, eB }, mainSize: bestSize };
 }
 function buildNodeIndex(G, cell) {
   const map = new Map();
@@ -333,8 +376,9 @@ function nearestNode(G, NI, x, y, maxR) {
 }
 
 // ---------- Kontekst analizy ----------
-function buildContext(osm, proj, bike, bboxM) {
-  const G = buildGraph(osm, proj, bike);
+function buildContext(osm, proj, profName, bboxM) {
+  const prof = PROFILES[profName] || PROFILES.run;
+  const G = buildGraph(osm, proj, prof);
   if (!G.mainSize) throw new Error('Brak dróg w tym obszarze.');
   const side = Math.max(bboxM[2] - bboxM[0], bboxM[3] - bboxM[1]);
   const cs = Math.max(12, side / 1100);
@@ -346,33 +390,40 @@ function buildContext(osm, proj, bike, bboxM) {
   }
   chamfer(grid, road);
   const NI = buildNodeIndex(G, 150);
-  return { G, grid, road, NI, bike };
+  return { G, grid, road, NI, profName };
 }
 
 // ---------- Szukanie położenia kształtu ----------
-const CAP = 120;
+function tauFor(sp, s) { return Math.max(40, 0.022 * sp.ext * s); }
 function evalPlacement(sp, samp, pl, ctx, start, tol) {
-  const c = Math.cos(pl.rot), s = Math.sin(pl.rot);
+  const c = Math.cos(pl.rot), s = Math.sin(pl.rot), tau = tauFor(sp, pl.s), cap = 3 * tau, E = sp.ext * pl.s;
   let sum = 0, dmin = Infinity;
   for (const q of samp) {
     const X = pl.cx + pl.s * (q[0] * c - q[1] * s), Y = pl.cy + pl.s * (q[0] * s + q[1] * c);
-    sum += fieldAt(ctx.grid, ctx.road, X, Y, CAP);
+    const v = fieldAt(ctx.grid, ctx.road, X, Y, cap);
+    sum += v * v;
     const d = (X - start[0]) ** 2 + (Y - start[1]) ** 2; if (d < dmin) dmin = d;
   }
   const dm = Math.sqrt(dmin);
-  return sum / samp.length + dm * 0.012 + Math.max(0, dm - tol) * 0.2;
+  return Math.sqrt(sum / samp.length) / tau + 1.2 * dm / E + Math.max(0, dm - tol) / tau;
 }
-function searchShape(sp, ctx, start, D, tol) {
+function dirOk(dx, dy, dir, E) {
+  if (dir == null) return true;
+  const r = hyp(dx, dy); if (r < 0.2 * E) return false;
+  let a = Math.atan2(dy, dx) - dir; a = Math.atan2(Math.sin(a), Math.cos(a));
+  return Math.abs(a) <= 50 * Math.PI / 180;
+}
+function searchShape(sp, ctx, start, D, tol, dir) {
   const samp = resample(sp.path, 110);
   const s0 = D * sp.lenFactor / sp.L;
   const cands = [];
   const rotStep = sp.isText ? 5 : 10;
   for (const k of [0.88, 1, 1.12]) {
-    const s = s0 * k, E = sp.ext * s, rc = E * 0.55 + tol, step = Math.max(E / 12, ctx.grid.cs * 2);
+    const s = s0 * k, E = sp.ext * s, rc = E * 0.6 + tol, step = Math.max(E / 14, ctx.grid.cs * 2);
     for (let rd = -sp.maxRot; rd <= sp.maxRot + 1e-9; rd += rotStep) {
       const rot = rd * Math.PI / 180;
       for (let dx = -rc; dx <= rc; dx += step) for (let dy = -rc; dy <= rc; dy += step) {
-        if (dx * dx + dy * dy > rc * rc) continue;
+        if (dx * dx + dy * dy > rc * rc || !dirOk(dx, dy, dir, E)) continue;
         const pl = { s, rot, cx: start[0] + dx, cy: start[1] + dy };
         pl.score = evalPlacement(sp, samp, pl, ctx, start, tol);
         cands.push(pl);
@@ -380,10 +431,9 @@ function searchShape(sp, ctx, start, D, tol) {
     }
   }
   cands.sort((a, b) => a.score - b.score);
-  // różnorodne najlepsze
   const top = [];
   for (const c of cands) {
-    if (top.every(t => hyp(t.cx - c.cx, t.cy - c.cy) > sp.ext * c.s / 4 || Math.abs(t.rot - c.rot) > 0.25)) top.push(c);
+    if (top.every(t => hyp(t.cx - c.cx, t.cy - c.cy) > sp.ext * c.s / 3 || Math.abs(t.rot - c.rot) > 0.25)) top.push(c);
     if (top.length >= 3) break;
   }
   return top.map(pl => refine(sp, samp, pl, ctx, start, tol)).sort((a, b) => a.score - b.score);
@@ -422,7 +472,7 @@ function makeRouter(G) {
       if (++visits > maxVisit) break;
       for (let k = G.start[u]; k < G.start[u + 1]; k++) {
         const v = G.to[k]; if (!G.inMain[v]) continue;
-        const nd = gs[u] + (cost ? cost[k] : G.len[k]);
+        const nd = gs[u] + (cost ? cost[k] : G.base[k]);
         if (nd < gs[v]) {
           if (gs[v] === Infinity) touched.push(v);
           gs[v] = nd; prev[v] = u;
@@ -447,7 +497,9 @@ function routePlacement(sp, pl, ctx, start) {
   const placedPath = sp.path.map(tf);
   const shapeLen = polyLen(placedPath);
   // punkty kontrolne: wierzchołki + zagęszczenie
-  const wpStep = Math.min(450, Math.max(140, shapeLen / 50));
+  const E = sp.ext * pl.s, tau = tauFor(sp, pl.s);
+  let wpStep = Math.max(120, E / 9);
+  if (sp.isText) wpStep = Math.min(wpStep, Math.max(100, 4 * pl.s / 3));
   let W = densify(placedPath, wpStep);
   if (sp.closed) {
     W = W.slice(0, -1);
@@ -459,15 +511,15 @@ function routePlacement(sp, pl, ctx, start) {
   }
   // pole odległości od kształtu -> koszt krawędzi
   const sf = rasterPolyField(g, placedPath);
-  const m = G.to.length, cost = new Float32Array(m), tau = Math.max(35, Math.min(90, wpStep * 0.35));
+  const m = G.to.length, cost = new Float32Array(m), fcap = 4 * tau;
   for (let a = 0; a < G.n; a++) {
     if (!G.inMain[a]) continue;
-    const fa = fieldAt(g, sf, G.X[a], G.Y[a], 400);
+    const fa = fieldAt(g, sf, G.X[a], G.Y[a], fcap);
     for (let k = G.start[a]; k < G.start[a + 1]; k++) {
       const b = G.to[k];
-      const fb = fieldAt(g, sf, G.X[b], G.Y[b], 400), fm = fieldAt(g, sf, (G.X[a] + G.X[b]) / 2, (G.Y[a] + G.Y[b]) / 2, 400);
+      const fb = fieldAt(g, sf, G.X[b], G.Y[b], fcap), fm = fieldAt(g, sf, (G.X[a] + G.X[b]) / 2, (G.Y[a] + G.Y[b]) / 2, fcap);
       const d = (fa + fb + 2 * fm) / 4;
-      cost[k] = G.len[k] * (1 + Math.min(8, (d / tau) ** 2));
+      cost[k] = G.base[k] * (1 + Math.min(8, (d / tau) ** 2));
     }
   }
   const first = nearestNode(G, ctx.NI, W[0][0], W[0][1]).i;
@@ -476,7 +528,7 @@ function routePlacement(sp, pl, ctx, start) {
   for (let i = 1; i < W.length; i++) {
     const isLast = i === W.length - 1;
     const nn = nearestNode(G, ctx.NI, W[i][0], W[i][1]);
-    const r = Math.max(70, nn.d + 60, wpStep * 0.3);
+    const r = Math.max(70, nn.d + 60, wpStep * 0.35);
     const exact = (isLast && sp.closed) ? first : -1;
     if (exact < 0 && hyp(G.X[cur] - W[i][0], G.Y[cur] - W[i][1]) <= r) continue;
     let seg = route(cur, W[i][0], W[i][1], r, exact, cost, maxVisit);
@@ -485,7 +537,7 @@ function routePlacement(sp, pl, ctx, start) {
     for (let j = 1; j < seg.length; j++) path.push(seg[j]);
     cur = seg[seg.length - 1];
   }
-  path = removeTinySpurs(G, path, Math.max(40, Math.min(400, wpStep * 0.7)));
+  path = removeTinySpurs(G, path, Math.max(40, Math.min(1500, wpStep * 0.7)));
   const drawLen = pathLen(G, path);
   // dojazd z miejsca startu
   const sNode = nearestNode(G, ctx.NI, start[0], start[1]).i;
@@ -494,13 +546,13 @@ function routePlacement(sp, pl, ctx, start) {
   const apprLen = pathLen(G, toPath) + pathLen(G, backPath);
   // dopasowanie
   const rc = path.map(i => [G.X[i], G.Y[i]]);
-  const rDense = densify(rc, g.cs * 2);
-  let a = 0; for (const q of rDense) a += fieldAt(g, sf, q[0], q[1], 300); a /= rDense.length;
+  const rDense = densify(rc, Math.max(g.cs * 2, tau / 4));
+  let a = 0; for (const q of rDense) a += fieldAt(g, sf, q[0], q[1], 6 * tau); a /= rDense.length;
   const rf = rasterPolyField(g, rc);
-  const sDense = densify(placedPath, g.cs * 2);
-  let b = 0; for (const q of sDense) b += fieldAt(g, rf, q[0], q[1], 300); b /= sDense.length;
+  const sDense = densify(placedPath, Math.max(g.cs * 2, tau / 4));
+  let b = 0; for (const q of sDense) b += fieldAt(g, rf, q[0], q[1], 6 * tau); b /= sDense.length;
   const sym = (a + b) / 2;
-  const E = sp.ext * pl.s, ref = Math.max(40, 0.015 * E);
+  const ref = Math.max(40, 0.015 * E);
   const fit = Math.round(100 * Math.exp(-sym / (2.5 * ref)) * (failed ? 0.5 : 1));
   return { sp, pl, path, coords: rc, toCoords: toPath.map(i => [G.X[i], G.Y[i]]), backCoords: backPath.map(i => [G.X[i], G.Y[i]]), placedPath, drawLen, apprLen, total: drawLen + apprLen, fit, failed, wrongM: wrongLen(G, toPath) + wrongLen(G, path) + wrongLen(G, backPath), devRoute: a, devShape: b };
 }
@@ -518,8 +570,8 @@ function removeTinySpurs(G, p, maxLen) {
   }
   return st;
 }
-function planRoute(sp, ctx, start, D, tol) {
-  const tops = searchShape(sp, ctx, start, D, tol);
+function planRoute(sp, ctx, start, D, tol, dir) {
+  const tops = searchShape(sp, ctx, start, D, tol, dir);
   let best = null;
   for (const pl of tops.slice(0, 2)) {
     let r = routePlacement(sp, pl, ctx, start), curPl = pl;
@@ -537,7 +589,7 @@ function planRoute(sp, ctx, start, D, tol) {
   }
   return best;
 }
-if (typeof module !== 'undefined') module.exports = { makeProj, SHAPES, FUN_WORDS, textShape, prepShape, buildContext, searchShape, routePlacement, planRoute, resample, polyLen };
+if (typeof module !== 'undefined') module.exports = { PROFILES, makeProj, SHAPES, FUN_WORDS, textShape, prepShape, buildContext, searchShape, routePlacement, planRoute, resample, polyLen };
 
 </script>
 <script>
@@ -560,7 +612,16 @@ what.innerHTML = '<option value="__all">✨ Zaskocz mnie (kształty i śmieszne 
   SHAPES.map(s => `<option value="${s.id}">${s.name}</option>`).join('') + '<option value="__txt">✍️ Własny napis</option>';
 what.onchange = () => { $('txt').style.display = what.value === '__txt' ? 'block' : 'none'; };
 
-$('act').onclick = e => { const b = e.target.closest('button'); if (!b) return; act = b.dataset.v; [...$('act').children].forEach(x => x.classList.toggle('on', x === b)); if (act === 'bike' && +$('dist').value < 25) $('dist').value = 40; if (act === 'run' && +$('dist').value > 40) $('dist').value = 15; };
+const ACT_HINT = {
+  run: 'Ulice, chodniki, ścieżki i dukty.',
+  road: 'Tylko drogi utwardzone. Bez szutru, bruku i dróg gruntowych. Drogi bez informacji o nawierzchni są używane niechętnie.',
+  touring: 'Asfalt, ścieżki rowerowe i dobre drogi szutrowe. Bez piachu, błota i wąskich ścieżek.',
+  gravel: 'Wszystko, co przejezdne, z preferencją dla duktów i szutrów.',
+};
+const ACT_DIST = { run: 15, road: 80, touring: 50, gravel: 50 };
+function setAct(v) { act = v; [...$('act').children].forEach(x => x.classList.toggle('on', x.dataset.v === v)); $('actHint').textContent = ACT_HINT[v]; $('dist').value = ACT_DIST[v]; }
+$('act').onclick = e => { const b = e.target.closest('button'); if (b) setAct(b.dataset.v); };
+setAct('run');
 $('tog').onclick = () => { const p = $('panel'); p.classList.toggle('min'); $('tog').textContent = p.classList.contains('min') ? 'rozwiń' : 'zwiń'; };
 
 function setStart(lat, lon, label) {
@@ -589,6 +650,11 @@ async function geocode(q) {
 }
 $('qb').onclick = async () => {
   const q = $('q').value.trim(); if (!q) return;
+  const m = q.match(/^\s*(-?\d{1,2}(?:[.,]\d+)?)\s*[,;\s]\s*(-?\d{1,3}(?:[.,]\d+)?)\s*$/) || q.match(/^\s*(-?\d{1,2}[.,]\d+)\s+(-?\d{1,3}[.,]\d+)\s*$/);
+  if (m) {
+    const la = parseFloat(m[1].replace(',', '.')), lo = parseFloat(m[2].replace(',', '.'));
+    if (Math.abs(la) <= 90 && Math.abs(lo) <= 180) { setStart(la, lo, 'Współrzędne'); map.setView([la, lo], 13); status(''); return; }
+  }
   status('Szukam miejsca…');
   try { const g = await geocode(q); if (!g) { status('Nie znalazłem takiego miejsca.', true); return; } setStart(g.lat, g.lon, g.name); map.setView([g.lat, g.lon], 13); status(''); }
   catch (e) { status('Wyszukiwanie nie działa: ' + e.message, true); }
@@ -603,17 +669,23 @@ $('geo').onclick = () => {
 
 // --- pobranie dróg z OSM
 const OVERPASS = ['https://overpass-api.de/api/interpreter', 'https://overpass.kumi.systems/api/interpreter', 'https://overpass.private.coffee/api/interpreter'];
-function highwayFilter(bike, areaKm2) {
-  let t = ['primary', 'primary_link', 'secondary', 'secondary_link', 'tertiary', 'tertiary_link', 'unclassified', 'residential', 'living_street', 'track', 'cycleway'];
-  if (!bike) t.push('pedestrian');
-  if (areaKm2 <= 250) t.push('path');
-  if (areaKm2 <= 80) { t.push('service'); if (!bike) t.push('footway', 'steps'); }
-  return t;
+const UNPAVED_Q = '^(unpaved|gravel|fine_gravel|dirt|earth|ground|grass|sand|mud|compacted|pebblestone|woodchips|grass_paver|rock|stone|soil|clay)$';
+function overpassFilter(prof, areaKm2) {
+  const main = ['primary', 'primary_link', 'secondary', 'secondary_link', 'tertiary', 'tertiary_link', 'unclassified', 'residential', 'living_street', 'cycleway'];
+  let t = main.slice(), extra = '';
+  if (prof === 'run') { t.push('pedestrian', 'track'); if (areaKm2 <= 250) t.push('path'); if (areaKm2 <= 80) t.push('service', 'footway', 'steps'); extra = '["foot"!~"^(no)$"]'; }
+  else {
+    extra = '["bicycle"!~"^(no|dismount)$"]';
+    if (areaKm2 <= 80) t.push('service');
+    if (prof === 'road') extra += `["surface"!~"${UNPAVED_Q}"]["tracktype"!~"."]`;
+    if (prof === 'touring') { t.push('track'); if (areaKm2 <= 400) t.push('path'); }
+    if (prof === 'gravel') { t.push('track', 'bridleway'); if (areaKm2 <= 600) t.push('path'); if (areaKm2 <= 80) t.push('footway'); }
+  }
+  return { types: t.join('|'), extra };
 }
-async function fetchRoads(bboxLL, bike, areaKm2) {
+async function fetchRoads(bboxLL, prof, areaKm2) {
   const [s, w, n, e] = bboxLL;
-  const types = highwayFilter(bike, areaKm2).join('|');
-  const extra = bike ? '["bicycle"!~"^(no|dismount)$"]' : '["foot"!~"^(no)$"]';
+  const { types, extra } = overpassFilter(prof, areaKm2);
   const q = `[out:json][timeout:170][maxsize:536870912];way["highway"~"^(${types})$"]["access"!~"^(private|no)$"]["area"!="yes"]${extra}(${s},${w},${n},${e});out geom qt;`;
   let lastErr;
   for (const url of OVERPASS) {
@@ -632,7 +704,8 @@ async function fetchRoads(bboxLL, bike, areaKm2) {
 $('go').onclick = run;
 async function run() {
   if (!startLL) { status('Najpierw wybierz start: wpisz miejsce, użyj lokalizacji albo dotknij mapy.', true); return; }
-  const D = Math.max(3, Math.min(120, +$('dist').value || 15)) * 1000, tol = +$('tol').value, bike = act === 'bike';
+  const D = Math.max(3, Math.min(200, +$('dist').value || 15)) * 1000, tol = +$('tol').value, prof = act;
+  const dirV = $('dir').value, dir = dirV === '' ? null : (+dirV) * Math.PI / 180;
   let list;
   if (what.value === '__all') list = D <= 50000 ? SHAPES.concat(FUN_WORDS.map(textShape)) : SHAPES.slice();
   else if (what.value === '__txt') { const t = textShape($('txt').value.trim()); if (!t) { status('Wpisz napis z liter lub cyfr.', true); return; } list = [t]; }
@@ -641,21 +714,21 @@ async function run() {
   // wymagany obszar
   let half = 0;
   for (const sp of preps) { const E = sp.ext * D * sp.lenFactor / sp.L * 1.12; half = Math.max(half, 1.2 * E + tol + 400); }
-  half = Math.min(half, 30000);
+  half = Math.min(half, 40000);
   $('go').disabled = true; clearResults();
   try {
     let ctx;
-    const reuse = cache && cache.bike === bike && (() => { const p = cache.proj.fwd(startLL[0], startLL[1]); const b = cache.bboxM; return p[0] - half >= b[0] && p[0] + half <= b[2] && p[1] - half >= b[1] && p[1] + half <= b[3]; })();
+    const reuse = cache && cache.prof === prof && (() => { const p = cache.proj.fwd(startLL[0], startLL[1]); const b = cache.bboxM; return p[0] - half >= b[0] && p[0] + half <= b[2] && p[1] - half >= b[1] && p[1] + half <= b[3]; })();
     if (reuse) ctx = cache;
     else {
       const proj = makeProj(startLL[0], startLL[1]);
       const sw = proj.inv(-half, -half), ne = proj.inv(half, half);
       const area = (2 * half / 1000) ** 2;
       progress(0.05); status(`Pobieram drogi i ścieżki z OpenStreetMap (obszar ok. ${Math.round(area)} km²)… To może potrwać do minuty.`);
-      const osm = await fetchRoads([sw[0], sw[1], ne[0], ne[1]], bike, area);
+      const osm = await fetchRoads([sw[0], sw[1], ne[0], ne[1]], prof, area);
       progress(0.3); status('Buduję sieć dróg…'); await tick();
-      ctx = buildContext(osm, proj, bike, [-half, -half, half, half]);
-      ctx.proj = proj; ctx.bike = bike; ctx.bboxM = [-half, -half, half, half];
+      ctx = buildContext(osm, proj, prof, [-half, -half, half, half]);
+      ctx.proj = proj; ctx.prof = prof; ctx.bboxM = [-half, -half, half, half];
       cache = ctx;
     }
     const st = ctx.proj.fwd(startLL[0], startLL[1]);
@@ -663,13 +736,13 @@ async function run() {
     if (preps.length > 1) {
       status('Sprawdzam, które kształty pasują do okolicy…');
       const sc = [];
-      for (let i = 0; i < preps.length; i++) { await tick(); const t = searchShape(preps[i], ctx, st, D, tol); sc.push({ sp: preps[i], s: t[0] ? t[0].score : 1e9 }); progress(0.3 + 0.2 * (i + 1) / preps.length); }
+      for (let i = 0; i < preps.length; i++) { await tick(); const t = searchShape(preps[i], ctx, st, D, tol, dir); sc.push({ sp: preps[i], s: t[0] ? t[0].score : 1e9 }); progress(0.3 + 0.2 * (i + 1) / preps.length); }
       sc.sort((a, b) => a.s - b.s);
       chosen = sc.slice(0, 7).map(x => x.sp);
     }
     for (let i = 0; i < chosen.length; i++) {
       status(`Układam trasę: ${chosen[i].name} (${i + 1}/${chosen.length})…`); await tick();
-      try { const r = planRoute(chosen[i], ctx, st, D, tol); if (r && r.coords.length > 2) { results.push(r); renderResults(); } } catch (e) { console.error(e); }
+      try { const r = planRoute(chosen[i], ctx, st, D, tol, dir); if (r && r.coords.length > 2) { results.push(r); renderResults(); } } catch (e) { console.error(e); }
       progress(0.5 + 0.5 * (i + 1) / chosen.length);
     }
     progress(null);
@@ -679,7 +752,7 @@ async function run() {
   $('go').disabled = false;
 }
 
-function clearResults() { results = []; sel = -1; $('results').innerHTML = ''; $('detail').style.display = 'none'; if (layers) { map.removeLayer(layers); layers = null; } }
+function clearResults() { $('gpx2').style.display = 'none'; results = []; sel = -1; $('results').innerHTML = ''; $('detail').style.display = 'none'; if (layers) { map.removeLayer(layers); layers = null; } }
 function km(m) { return (m / 1000).toFixed(1).replace('.', ','); }
 function mini(r) {
   const all = r.coords; const xs = all.map(p => p[0]), ys = all.map(p => p[1]);
@@ -706,18 +779,25 @@ function select(i) {
     L.polyline(ll(r.backCoords), { color: '#2563eb', weight: 4, dashArray: '6 6' }),
     L.polyline(ll(r.coords), { color: '#e5531a', weight: 5, opacity: .9 }),
   ]).addTo(map);
-  map.fitBounds(L.polyline(ll(r.coords.concat(r.toCoords))).getBounds(), { padding: [30, 30] });
+  const pnl = $('panel'), mob = window.innerWidth < 800;
+  if (mob) { pnl.classList.add('min'); $('tog').textContent = 'rozwiń'; }
+  $('gpx2').style.display = 'inline-block';
+  const bnd = L.polyline(ll(r.coords.concat(r.toCoords, r.placedPath))).getBounds();
+  setTimeout(() => { map.invalidateSize(); map.fitBounds(bnd, mob
+    ? { paddingTopLeft: [20, 20], paddingBottomRight: [20, 100] }
+    : { paddingTopLeft: [pnl.offsetWidth + 40, 30], paddingBottomRight: [30, 30] }); }, 60);
   $('detail').style.display = 'block';
   $('dName').textContent = r.sp.name + ' · dopasowanie ' + r.fit + '%';
   $('dStats').innerHTML = `Rysunek: <b>${km(r.drawLen)} km</b>${r.apprLen > 50 ? ` · dojazd i powrót: <b>${km(r.apprLen)} km</b>` : ''} · razem: <b>${km(r.total)} km</b><br>Średnie odchylenie od wzoru: ok. ${Math.round((r.devRoute + r.devShape) / 2)} m${r.wrongM > 20 ? `<br><b style="color:#b42318">Uwaga: ok. ${Math.round(r.wrongM)} m pod prąd ulicy jednokierunkowej. Sprawdź ten fragment lub przeprowadź tam rower.</b>` : ''}`;
 }
 function ctxProj() { return cache.proj; }
+$('gpx2').onclick = () => $('gpx').click();
 $('gpx').onclick = () => {
   const r = results[sel]; if (!r) return; const P = ctxProj();
   let seq = r.coords; if ($('withAppr').checked) seq = r.toCoords.concat(r.coords.slice(1), r.backCoords.slice(1));
   const name = 'Trasownik – ' + r.sp.name.replace(/[„”]/g, '') + ' ' + km(r.total) + ' km';
   const pts = seq.map(p => { const [la, lo] = P.inv(p[0], p[1]); return `<trkpt lat="${la.toFixed(6)}" lon="${lo.toFixed(6)}"></trkpt>`; }).join('\n');
-  const gpx = `<?xml version="1.0" encoding="UTF-8"?>\n<gpx version="1.1" creator="Trasownik" xmlns="http://www.topografix.com/GPX/1/1">\n<metadata><name>${name}</name></metadata>\n<trk><name>${name}</name><type>${act === 'bike' ? 'cycling' : 'running'}</type><trkseg>\n${pts}\n</trkseg></trk>\n</gpx>`;
+  const gpx = `<?xml version="1.0" encoding="UTF-8"?>\n<gpx version="1.1" creator="Trasownik" xmlns="http://www.topografix.com/GPX/1/1">\n<metadata><name>${name}</name></metadata>\n<trk><name>${name}</name><type>${act === 'run' ? 'running' : 'cycling'}</type><trkseg>\n${pts}\n</trkseg></trk>\n</gpx>`;
   const blob = new Blob([gpx], { type: 'application/gpx+xml' });
   const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
   a.download = 'trasa-' + r.sp.name.toLowerCase().replace(/[^a-z0-9ąćęłńóśźż]+/g, '') + '-' + Math.round(r.total / 1000) + 'km.gpx';

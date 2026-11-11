@@ -169,16 +169,54 @@ function fieldAt(g, f, X, Y, cap) {
 }
 function rasterPolyField(g, pts) { const f = newField(g); for (let i = 1; i < pts.length; i++) rasterSeg(g, f, pts[i - 1][0], pts[i - 1][1], pts[i][0], pts[i][1]); return chamfer(g, f); }
 
+// ---------- Profile aktywności: waga krawędzi (0 = wykluczona) ----------
+const UNPAVED = /^(unpaved|gravel|fine_gravel|dirt|earth|ground|grass|sand|mud|compacted|pebblestone|woodchips|grass_paver|rock|stone|soil|clay)$/;
+const BAD_SMOOTH = /^(bad|very_bad|horrible|very_horrible|impassable)$/;
+const PROFILES = {
+  run: { name: 'Bieg', oneway: false, w(t) {
+    const h = t.highway;
+    return { primary: 2.2, primary_link: 2.2, secondary: 1.6, secondary_link: 1.6, tertiary: 1.2, tertiary_link: 1.2, steps: 3, service: 1.3 }[h] || 1;
+  } },
+  road: { name: 'Szosa', oneway: true, w(t) {
+    const h = t.highway, s = t.surface || '';
+    if (UNPAVED.test(s) || t.tracktype || BAD_SMOOTH.test(t.smoothness || '')) return 0;
+    let w = { primary: 1.8, primary_link: 1.8, secondary: 1.2, secondary_link: 1.2, tertiary: 1, tertiary_link: 1, unclassified: 1.05, residential: 1.3, living_street: 1.6, service: 2, cycleway: 1 }[h];
+    if (!w) return 0;
+    if (/^(sett|cobblestone|unhewn_cobblestone)$/.test(s)) w *= 3;
+    else if (s === 'paving_stones') w *= 1.3;
+    if (!s && /^(unclassified|residential|service|living_street)$/.test(h)) w *= 1.6; // brak informacji o nawierzchni
+    return w;
+  } },
+  touring: { name: 'Turystyczny', oneway: true, w(t) {
+    const h = t.highway, s = t.surface || '';
+    if (/^(sand|mud|grass|dirt|earth|ground|rock|woodchips|soil|clay)$/.test(s) || /grade[345]/.test(t.tracktype || '') || BAD_SMOOTH.test(t.smoothness || '')) return 0;
+    if (h === 'path' && !/^(designated|yes)$/.test(t.bicycle || '')) return 0;
+    let w = { primary: 2, primary_link: 2, secondary: 1.4, secondary_link: 1.4, tertiary: 1.1, tertiary_link: 1.1, unclassified: 1, residential: 1.2, living_street: 1.4, service: 1.8, cycleway: 0.9, track: 1.15, path: 1.1 }[h];
+    if (!w) return 0;
+    if (/^(sett|cobblestone|unhewn_cobblestone)$/.test(s)) w *= 2.5;
+    return w;
+  } },
+  gravel: { name: 'Gravel/MTB', oneway: true, w(t) {
+    const h = t.highway, s = t.surface || '';
+    if (s === 'mud') return 0;
+    let w = { primary: 2.5, primary_link: 2.5, secondary: 1.8, secondary_link: 1.8, tertiary: 1.3, tertiary_link: 1.3, unclassified: 1, residential: 1.2, living_street: 1.4, service: 1.6, cycleway: 1, track: 0.85, path: 0.95, bridleway: 1.2, footway: 1.8 }[h];
+    if (!w) return 0;
+    if (s === 'sand') w *= 2;
+    return w;
+  } },
+};
+
 // ---------- Graf dróg z odpowiedzi Overpass ----------
-function buildGraph(osm, proj, bike) {
+function buildGraph(osm, proj, prof) {
   const idx = new Map(), xs = [], ys = [];
-  const eA = [], eB = [], eDir = []; // eDir: 0 obie strony, 1 tylko A->B
+  const eA = [], eB = [], eDir = [], eW = []; // eDir: 0 obie strony, 1 tylko A->B
   function nodeId(key, lat, lon) { let i = idx.get(key); if (i === undefined) { i = xs.length; idx.set(key, i); const p = proj.fwd(lat, lon); xs.push(p[0]); ys.push(p[1]); } return i; }
   for (const el of osm.elements || []) {
     if (el.type !== 'way' || !el.geometry) continue;
     const t = el.tags || {};
+    const wt = prof.w(t); if (!wt) continue;
     let dir = 0;
-    if (bike) {
+    if (prof.oneway) {
       const ow = t.oneway, obn = t['oneway:bicycle'] === 'no' || t['cycleway'] === 'opposite' || t['cycleway'] === 'opposite_lane';
       if (!obn && (ow === 'yes' || ow === '1' || t.junction === 'roundabout')) dir = 1;
       if (!obn && ow === '-1') dir = -1;
@@ -190,6 +228,7 @@ function buildGraph(osm, proj, bike) {
       const i = nodeId(key, gpt.lat, gpt.lon);
       if (prev >= 0 && prev !== i) {
         if (dir === -1) { eA.push(i); eB.push(prev); eDir.push(1); } else { eA.push(prev); eB.push(i); eDir.push(dir); }
+        eW.push(wt);
       }
       prev = i;
     }
@@ -197,13 +236,13 @@ function buildGraph(osm, proj, bike) {
   const n = xs.length, deg = new Int32Array(n + 1);
   for (let e = 0; e < eA.length; e++) { deg[eA[e]]++; deg[eB[e]]++; }
   const start = new Int32Array(n + 1); for (let i = 0; i < n; i++) start[i + 1] = start[i] + deg[i];
-  const m = start[n], to = new Int32Array(m), len = new Float32Array(m), wrong = new Uint8Array(m), fill = start.slice(0, n);
+  const m = start[n], to = new Int32Array(m), len = new Float32Array(m), wrong = new Uint8Array(m), base = new Float32Array(m), fill = start.slice(0, n);
   const X = Float64Array.from(xs), Y = Float64Array.from(ys);
   for (let e = 0; e < eA.length; e++) {
     const a = eA[e], b = eB[e], L = hyp(X[a] - X[b], Y[a] - Y[b]);
-    to[fill[a]] = b; len[fill[a]++] = L;
-    if (!eDir[e]) { to[fill[b]] = a; len[fill[b]++] = L; }
-    else { to[fill[b]] = a; wrong[fill[b]] = 1; len[fill[b]++] = L * 15; } // pod prąd: tylko awaryjnie
+    to[fill[a]] = b; len[fill[a]] = L; base[fill[a]++] = L * eW[e];
+    if (!eDir[e]) { to[fill[b]] = a; len[fill[b]] = L; base[fill[b]++] = L * eW[e]; }
+    else { to[fill[b]] = a; wrong[fill[b]] = 1; len[fill[b]] = L; base[fill[b]++] = L * eW[e] * 15; } // pod prąd: tylko awaryjnie
   }
   // największa składowa spójności (nieskierowana)
   const und = new Map();
@@ -218,7 +257,7 @@ function buildGraph(osm, proj, bike) {
     cid++;
   }
   const inMain = new Uint8Array(n); for (let i = 0; i < n; i++) inMain[i] = comp[i] === best ? 1 : 0;
-  return { n, X, Y, start, to, len, wrong, inMain, edges: { eA, eB }, mainSize: bestSize };
+  return { n, X, Y, start, to, len, base, wrong, inMain, edges: { eA, eB }, mainSize: bestSize };
 }
 function buildNodeIndex(G, cell) {
   const map = new Map();
@@ -245,8 +284,9 @@ function nearestNode(G, NI, x, y, maxR) {
 }
 
 // ---------- Kontekst analizy ----------
-function buildContext(osm, proj, bike, bboxM) {
-  const G = buildGraph(osm, proj, bike);
+function buildContext(osm, proj, profName, bboxM) {
+  const prof = PROFILES[profName] || PROFILES.run;
+  const G = buildGraph(osm, proj, prof);
   if (!G.mainSize) throw new Error('Brak dróg w tym obszarze.');
   const side = Math.max(bboxM[2] - bboxM[0], bboxM[3] - bboxM[1]);
   const cs = Math.max(12, side / 1100);
@@ -258,33 +298,40 @@ function buildContext(osm, proj, bike, bboxM) {
   }
   chamfer(grid, road);
   const NI = buildNodeIndex(G, 150);
-  return { G, grid, road, NI, bike };
+  return { G, grid, road, NI, profName };
 }
 
 // ---------- Szukanie położenia kształtu ----------
-const CAP = 120;
+function tauFor(sp, s) { return Math.max(40, 0.022 * sp.ext * s); }
 function evalPlacement(sp, samp, pl, ctx, start, tol) {
-  const c = Math.cos(pl.rot), s = Math.sin(pl.rot);
+  const c = Math.cos(pl.rot), s = Math.sin(pl.rot), tau = tauFor(sp, pl.s), cap = 3 * tau, E = sp.ext * pl.s;
   let sum = 0, dmin = Infinity;
   for (const q of samp) {
     const X = pl.cx + pl.s * (q[0] * c - q[1] * s), Y = pl.cy + pl.s * (q[0] * s + q[1] * c);
-    sum += fieldAt(ctx.grid, ctx.road, X, Y, CAP);
+    const v = fieldAt(ctx.grid, ctx.road, X, Y, cap);
+    sum += v * v;
     const d = (X - start[0]) ** 2 + (Y - start[1]) ** 2; if (d < dmin) dmin = d;
   }
   const dm = Math.sqrt(dmin);
-  return sum / samp.length + dm * 0.012 + Math.max(0, dm - tol) * 0.2;
+  return Math.sqrt(sum / samp.length) / tau + 1.2 * dm / E + Math.max(0, dm - tol) / tau;
 }
-function searchShape(sp, ctx, start, D, tol) {
+function dirOk(dx, dy, dir, E) {
+  if (dir == null) return true;
+  const r = hyp(dx, dy); if (r < 0.2 * E) return false;
+  let a = Math.atan2(dy, dx) - dir; a = Math.atan2(Math.sin(a), Math.cos(a));
+  return Math.abs(a) <= 50 * Math.PI / 180;
+}
+function searchShape(sp, ctx, start, D, tol, dir) {
   const samp = resample(sp.path, 110);
   const s0 = D * sp.lenFactor / sp.L;
   const cands = [];
   const rotStep = sp.isText ? 5 : 10;
   for (const k of [0.88, 1, 1.12]) {
-    const s = s0 * k, E = sp.ext * s, rc = E * 0.55 + tol, step = Math.max(E / 12, ctx.grid.cs * 2);
+    const s = s0 * k, E = sp.ext * s, rc = E * 0.6 + tol, step = Math.max(E / 14, ctx.grid.cs * 2);
     for (let rd = -sp.maxRot; rd <= sp.maxRot + 1e-9; rd += rotStep) {
       const rot = rd * Math.PI / 180;
       for (let dx = -rc; dx <= rc; dx += step) for (let dy = -rc; dy <= rc; dy += step) {
-        if (dx * dx + dy * dy > rc * rc) continue;
+        if (dx * dx + dy * dy > rc * rc || !dirOk(dx, dy, dir, E)) continue;
         const pl = { s, rot, cx: start[0] + dx, cy: start[1] + dy };
         pl.score = evalPlacement(sp, samp, pl, ctx, start, tol);
         cands.push(pl);
@@ -292,10 +339,9 @@ function searchShape(sp, ctx, start, D, tol) {
     }
   }
   cands.sort((a, b) => a.score - b.score);
-  // różnorodne najlepsze
   const top = [];
   for (const c of cands) {
-    if (top.every(t => hyp(t.cx - c.cx, t.cy - c.cy) > sp.ext * c.s / 4 || Math.abs(t.rot - c.rot) > 0.25)) top.push(c);
+    if (top.every(t => hyp(t.cx - c.cx, t.cy - c.cy) > sp.ext * c.s / 3 || Math.abs(t.rot - c.rot) > 0.25)) top.push(c);
     if (top.length >= 3) break;
   }
   return top.map(pl => refine(sp, samp, pl, ctx, start, tol)).sort((a, b) => a.score - b.score);
@@ -334,7 +380,7 @@ function makeRouter(G) {
       if (++visits > maxVisit) break;
       for (let k = G.start[u]; k < G.start[u + 1]; k++) {
         const v = G.to[k]; if (!G.inMain[v]) continue;
-        const nd = gs[u] + (cost ? cost[k] : G.len[k]);
+        const nd = gs[u] + (cost ? cost[k] : G.base[k]);
         if (nd < gs[v]) {
           if (gs[v] === Infinity) touched.push(v);
           gs[v] = nd; prev[v] = u;
@@ -359,7 +405,9 @@ function routePlacement(sp, pl, ctx, start) {
   const placedPath = sp.path.map(tf);
   const shapeLen = polyLen(placedPath);
   // punkty kontrolne: wierzchołki + zagęszczenie
-  const wpStep = Math.min(450, Math.max(140, shapeLen / 50));
+  const E = sp.ext * pl.s, tau = tauFor(sp, pl.s);
+  let wpStep = Math.max(120, E / 9);
+  if (sp.isText) wpStep = Math.min(wpStep, Math.max(100, 4 * pl.s / 3));
   let W = densify(placedPath, wpStep);
   if (sp.closed) {
     W = W.slice(0, -1);
@@ -371,15 +419,15 @@ function routePlacement(sp, pl, ctx, start) {
   }
   // pole odległości od kształtu -> koszt krawędzi
   const sf = rasterPolyField(g, placedPath);
-  const m = G.to.length, cost = new Float32Array(m), tau = Math.max(35, Math.min(90, wpStep * 0.35));
+  const m = G.to.length, cost = new Float32Array(m), fcap = 4 * tau;
   for (let a = 0; a < G.n; a++) {
     if (!G.inMain[a]) continue;
-    const fa = fieldAt(g, sf, G.X[a], G.Y[a], 400);
+    const fa = fieldAt(g, sf, G.X[a], G.Y[a], fcap);
     for (let k = G.start[a]; k < G.start[a + 1]; k++) {
       const b = G.to[k];
-      const fb = fieldAt(g, sf, G.X[b], G.Y[b], 400), fm = fieldAt(g, sf, (G.X[a] + G.X[b]) / 2, (G.Y[a] + G.Y[b]) / 2, 400);
+      const fb = fieldAt(g, sf, G.X[b], G.Y[b], fcap), fm = fieldAt(g, sf, (G.X[a] + G.X[b]) / 2, (G.Y[a] + G.Y[b]) / 2, fcap);
       const d = (fa + fb + 2 * fm) / 4;
-      cost[k] = G.len[k] * (1 + Math.min(8, (d / tau) ** 2));
+      cost[k] = G.base[k] * (1 + Math.min(8, (d / tau) ** 2));
     }
   }
   const first = nearestNode(G, ctx.NI, W[0][0], W[0][1]).i;
@@ -388,7 +436,7 @@ function routePlacement(sp, pl, ctx, start) {
   for (let i = 1; i < W.length; i++) {
     const isLast = i === W.length - 1;
     const nn = nearestNode(G, ctx.NI, W[i][0], W[i][1]);
-    const r = Math.max(70, nn.d + 60, wpStep * 0.3);
+    const r = Math.max(70, nn.d + 60, wpStep * 0.35);
     const exact = (isLast && sp.closed) ? first : -1;
     if (exact < 0 && hyp(G.X[cur] - W[i][0], G.Y[cur] - W[i][1]) <= r) continue;
     let seg = route(cur, W[i][0], W[i][1], r, exact, cost, maxVisit);
@@ -397,7 +445,7 @@ function routePlacement(sp, pl, ctx, start) {
     for (let j = 1; j < seg.length; j++) path.push(seg[j]);
     cur = seg[seg.length - 1];
   }
-  path = removeTinySpurs(G, path, Math.max(40, Math.min(400, wpStep * 0.7)));
+  path = removeTinySpurs(G, path, Math.max(40, Math.min(1500, wpStep * 0.7)));
   const drawLen = pathLen(G, path);
   // dojazd z miejsca startu
   const sNode = nearestNode(G, ctx.NI, start[0], start[1]).i;
@@ -406,13 +454,13 @@ function routePlacement(sp, pl, ctx, start) {
   const apprLen = pathLen(G, toPath) + pathLen(G, backPath);
   // dopasowanie
   const rc = path.map(i => [G.X[i], G.Y[i]]);
-  const rDense = densify(rc, g.cs * 2);
-  let a = 0; for (const q of rDense) a += fieldAt(g, sf, q[0], q[1], 300); a /= rDense.length;
+  const rDense = densify(rc, Math.max(g.cs * 2, tau / 4));
+  let a = 0; for (const q of rDense) a += fieldAt(g, sf, q[0], q[1], 6 * tau); a /= rDense.length;
   const rf = rasterPolyField(g, rc);
-  const sDense = densify(placedPath, g.cs * 2);
-  let b = 0; for (const q of sDense) b += fieldAt(g, rf, q[0], q[1], 300); b /= sDense.length;
+  const sDense = densify(placedPath, Math.max(g.cs * 2, tau / 4));
+  let b = 0; for (const q of sDense) b += fieldAt(g, rf, q[0], q[1], 6 * tau); b /= sDense.length;
   const sym = (a + b) / 2;
-  const E = sp.ext * pl.s, ref = Math.max(40, 0.015 * E);
+  const ref = Math.max(40, 0.015 * E);
   const fit = Math.round(100 * Math.exp(-sym / (2.5 * ref)) * (failed ? 0.5 : 1));
   return { sp, pl, path, coords: rc, toCoords: toPath.map(i => [G.X[i], G.Y[i]]), backCoords: backPath.map(i => [G.X[i], G.Y[i]]), placedPath, drawLen, apprLen, total: drawLen + apprLen, fit, failed, wrongM: wrongLen(G, toPath) + wrongLen(G, path) + wrongLen(G, backPath), devRoute: a, devShape: b };
 }
@@ -430,8 +478,8 @@ function removeTinySpurs(G, p, maxLen) {
   }
   return st;
 }
-function planRoute(sp, ctx, start, D, tol) {
-  const tops = searchShape(sp, ctx, start, D, tol);
+function planRoute(sp, ctx, start, D, tol, dir) {
+  const tops = searchShape(sp, ctx, start, D, tol, dir);
   let best = null;
   for (const pl of tops.slice(0, 2)) {
     let r = routePlacement(sp, pl, ctx, start), curPl = pl;
@@ -449,4 +497,4 @@ function planRoute(sp, ctx, start, D, tol) {
   }
   return best;
 }
-if (typeof module !== 'undefined') module.exports = { makeProj, SHAPES, FUN_WORDS, textShape, prepShape, buildContext, searchShape, routePlacement, planRoute, resample, polyLen };
+if (typeof module !== 'undefined') module.exports = { PROFILES, makeProj, SHAPES, FUN_WORDS, textShape, prepShape, buildContext, searchShape, routePlacement, planRoute, resample, polyLen };
