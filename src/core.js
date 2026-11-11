@@ -30,30 +30,7 @@ function densify(p, maxStep) {
   return out;
 }
 
-// ---------- Kształty (oś Y w górę = północ) ----------
-function arc(cx, cy, rx, ry, a0, a1, n) { const o = []; for (let i = 0; i <= n; i++) { const a = (a0 + (a1 - a0) * i / n) * Math.PI / 180; o.push([cx + rx * Math.cos(a), cy + ry * Math.sin(a)]); } return o; }
-const POLSKA = [[3.05,-0.07],[3.35,-0.72],[3.28,-0.81],[3.35,-1.06],[2.5,-1.99],[2.56,-2.57],[1.84,-2.18],[1.5,-2.17],[1.37,-2.28],[1.06,-2.21],[0.87,-2.41],[0.68,-2.39],[0.69,-2.22],[0.49,-1.99],[0.2,-2.2],[-0.05,-1.71],[-0.38,-1.56],[-0.5,-1.61],[-0.63,-1.48],[-0.58,-1.28],[-0.76,-1.34],[-1.09,-1.16],[-1.02,-1.35],[-1.24,-1.49],[-1.5,-1.17],[-1.37,-1.02],[-1.46,-0.94],[-1.63,-0.98],[-2.25,-0.58],[-2.36,-0.73],[-2.24,-0.34],[-2.49,0.24],[-2.4,0.49],[-2.48,0.94],[-2.78,1.29],[-2.61,1.61],[-2.7,2.14],[-2.5,2.05],[-2.52,2.23],[-2.73,2.36],[-1.52,2.7],[-1.29,2.96],[-0.35,3.24],[0.07,3.09],[-0.13,3.15],[0.01,2.84],[0.2,2.76],[0.59,2.87],[2.61,2.8],[2.96,2.55],[3.23,1.44],[3.23,1.11],[2.79,0.69],[3.08,0.45]];
-function heart() { const o = []; for (let i = 0; i < 48; i++) { const t = Math.PI + 2 * Math.PI * i / 48; o.push([16 * Math.sin(t) ** 3 / 16, (13 * Math.cos(t) - 5 * Math.cos(2 * t) - 2 * Math.cos(3 * t) - Math.cos(4 * t)) / 16]); } return o; }
-function star() { const o = []; for (let i = 0; i < 10; i++) { const a = Math.PI / 2 + i * Math.PI / 5, r = i % 2 ? 0.42 : 1; o.push([r * Math.cos(a), r * Math.sin(a)]); } return o; }
-function snail() {
-  const o = [], T = 5 * Math.PI;
-  for (let i = 0; i <= 60; i++) { const t = T * i / 60, r = 0.08 + 0.92 * t / T; o.push([r * Math.cos(t), r * Math.sin(t)]); }
-  return o.concat([[-1.2, -1.0], [1.4, -1.0], [1.8, -0.6], [1.75, 0.3], [1.5, 0.9], [1.75, 0.3], [2.0, 0.85]]);
-}
-const SHAPES = [
-  { id: 'serce', name: 'Serce', fun: 'Klasyk. Działa zawsze.', pts: heart(), closed: true, maxRot: 20 },
-  { id: 'polska', name: 'Polska', fun: 'Patriotyczny trening, Hel w cenie.', pts: POLSKA, closed: true, maxRot: 10 },
-  { id: 'gwiazda', name: 'Gwiazda', fun: 'Pięć ramion, dużo zakrętów.', pts: star(), closed: true, maxRot: 36 },
-  { id: 'kot', name: 'Kot', fun: 'Uszy wychodzą najlepiej na prostych ulicach.', pts: [[-1, 0.3], [-0.95, 1.35], [-0.4, 0.78], [0.4, 0.78], [0.95, 1.35], [1, 0.3]].concat(arc(0, 0.3, 1, 0.95, 0, -180, 14).slice(1, -1)), closed: true, maxRot: 15 },
-  { id: 'ryba', name: 'Ryba', fun: 'Bo czemu nie.', pts: arc(0.2, 0, 0.8, 0.5, 0, 160, 10).concat([[-1.15, 0.45], [-1.15, -0.45]], arc(0.2, 0, 0.8, 0.5, 200, 360, 10).slice(0, -1)), closed: true, maxRot: 30 },
-  { id: 'duszek', name: 'Duszek', fun: 'Buu! Falbanka na dole to wyzwanie.', pts: arc(0, 0.2, 1, 1, 0, 180, 12).concat([[-1, -1], [-0.66, -0.7], [-0.33, -1], [0, -0.7], [0.33, -1], [0.66, -0.7], [1, -1]]), closed: true, maxRot: 15 },
-  { id: 'grzyb', name: 'Grzyb', fun: 'Grzybobranie bez koszyka.', pts: arc(0, 0.2, 1.1, 0.9, 180, 0, 12).concat([[0.35, 0.2], [0.42, -1], [-0.42, -1], [-0.35, 0.2]]), closed: true, maxRot: 15 },
-  { id: 'choinka', name: 'Choinka', fun: 'Świąteczny trening w trzech piętrach.', pts: [[0, 1.5], [0.6, 0.6], [0.3, 0.6], [0.8, -0.2], [0.4, -0.2], [1, -1], [0.15, -1], [0.15, -1.4], [-0.15, -1.4], [-0.15, -1], [-1, -1], [-0.4, -0.2], [-0.8, -0.2], [-0.3, 0.6], [-0.6, 0.6]], closed: true, maxRot: 10 },
-  { id: 'domek', name: 'Domek', fun: 'Najłatwiejszy kształt dla miast z kratką ulic.', pts: [[-1, -1], [1, -1], [1, 0.4], [0, 1.3], [-1, 0.4]], closed: true, maxRot: 10 },
-  { id: 'blyskawica', name: 'Błyskawica', fun: 'Dla tych, co biegną szybko.', pts: [[0.25, 1.5], [-0.6, -0.1], [0, -0.1], [-0.35, -1.5], [0.7, 0.3], [0.1, 0.3], [0.6, 1.5]], closed: true, maxRot: 20 },
-  { id: 'strzalka', name: 'Strzałka', fun: 'Wskazuje drogę. Dosłownie.', pts: [[-0.25, -1], [0.25, -1], [0.25, 0.3], [0.6, 0.3], [0, 1], [-0.6, 0.3], [-0.25, 0.3]], closed: true, maxRot: 45 },
-  { id: 'slimak', name: 'Ślimak', fun: 'Tempo opcjonalne.', pts: snail(), closed: false, maxRot: 20 },
-];
+// Kształty: zob. shapes.js (SHAPES)
 const FUN_WORDS = ['XD', 'OK', 'LOL', 'HEJ'];
 
 // Czcionka jednokreskowa: x 0..2, y 0..4, start przy linii bazowej
@@ -408,6 +385,13 @@ function routePlacement(sp, pl, ctx, start) {
   const E = sp.ext * pl.s, tau = tauFor(sp, pl.s);
   let wpStep = Math.max(120, E / 9);
   if (sp.isText) wpStep = Math.min(wpStep, Math.max(100, 4 * pl.s / 3));
+  const tipKeys = new Set(), kk = q => Math.round(q[0]) + ',' + Math.round(q[1]);
+  for (let i = 1; i < placedPath.length - 1; i++) {
+    const a = placedPath[i - 1], b = placedPath[i], d = placedPath[i + 1];
+    const ux = b[0] - a[0], uy = b[1] - a[1], vx = d[0] - b[0], vy = d[1] - b[1];
+    const cosA = (ux * vx + uy * vy) / (hyp(ux, uy) * hyp(vx, vy) || 1);
+    if (cosA < -0.7) tipKeys.add(kk(b)); // ostry nawrót: koniec odnogi (wąs, promień, ucho)
+  }
   let W = densify(placedPath, wpStep);
   if (sp.closed) {
     W = W.slice(0, -1);
@@ -431,21 +415,23 @@ function routePlacement(sp, pl, ctx, start) {
     }
   }
   const first = nearestNode(G, ctx.NI, W[0][0], W[0][1]).i;
-  let path = [first], cur = first, failed = 0;
+  let path = [first], cur = first, failed = 0; const prot = new Set();
   const maxVisit = 1500000;
   for (let i = 1; i < W.length; i++) {
     const isLast = i === W.length - 1;
     const nn = nearestNode(G, ctx.NI, W[i][0], W[i][1]);
-    const r = Math.max(70, nn.d + 60, wpStep * 0.35);
+    const isTip = tipKeys.has(kk(W[i]));
+    const r = isTip ? Math.max(40, nn.d + 30) : Math.max(70, nn.d + 60, wpStep * 0.35);
     const exact = (isLast && sp.closed) ? first : -1;
-    if (exact < 0 && hyp(G.X[cur] - W[i][0], G.Y[cur] - W[i][1]) <= r) continue;
+    if (exact < 0 && hyp(G.X[cur] - W[i][0], G.Y[cur] - W[i][1]) <= r) { if (isTip) prot.add(cur); continue; }
     let seg = route(cur, W[i][0], W[i][1], r, exact, cost, maxVisit);
     if (!seg) seg = route(cur, W[i][0], W[i][1], r + 300, exact, null, 3000000);
     if (!seg) { failed++; continue; }
     for (let j = 1; j < seg.length; j++) path.push(seg[j]);
     cur = seg[seg.length - 1];
+    if (isTip) prot.add(cur);
   }
-  path = removeTinySpurs(G, path, Math.max(40, Math.min(1500, wpStep * 0.7)));
+  path = removeTinySpurs(G, path, Math.max(40, Math.min(1500, wpStep * 0.7)), prot);
   const drawLen = pathLen(G, path);
   // dojazd z miejsca startu
   const sNode = nearestNode(G, ctx.NI, start[0], start[1]).i;
@@ -465,10 +451,10 @@ function routePlacement(sp, pl, ctx, start) {
   return { sp, pl, path, coords: rc, toCoords: toPath.map(i => [G.X[i], G.Y[i]]), backCoords: backPath.map(i => [G.X[i], G.Y[i]]), placedPath, drawLen, apprLen, total: drawLen + apprLen, fit, failed, wrongM: wrongLen(G, toPath) + wrongLen(G, path) + wrongLen(G, backPath), devRoute: a, devShape: b };
 }
 // usuwa krótkie "wypady i powroty" powstałe przy przyciąganiu punktów do węzłów
-function removeTinySpurs(G, p, maxLen) {
+function removeTinySpurs(G, p, maxLen, prot) {
   const st = [], acc = [];
   for (const v of p) {
-    if (st.length >= 2 && st[st.length - 2] === v) {
+    if (st.length >= 2 && st[st.length - 2] === v && !(prot && prot.has(st[st.length - 1]))) {
       const l = hyp(G.X[v] - G.X[st[st.length - 1]], G.Y[v] - G.Y[st[st.length - 1]]);
       const spur = acc[acc.length - 1] + l;
       if (spur <= maxLen) { st.pop(); acc.pop(); acc[acc.length - 1] = Math.max(acc[acc.length - 1], spur); continue; }
@@ -497,4 +483,4 @@ function planRoute(sp, ctx, start, D, tol, dir) {
   }
   return best;
 }
-if (typeof module !== 'undefined') module.exports = { PROFILES, makeProj, SHAPES, FUN_WORDS, textShape, prepShape, buildContext, searchShape, routePlacement, planRoute, resample, polyLen };
+

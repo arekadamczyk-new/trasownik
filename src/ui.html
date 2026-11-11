@@ -108,8 +108,12 @@ let startLL = null, startMarker = null, act = 'run', cache = null, results = [],
 
 // --- wybór kształtu
 const what = $('what');
-what.innerHTML = '<option value="__all">✨ Zaskocz mnie (kształty i śmieszne napisy)</option>' +
-  SHAPES.map(s => `<option value="${s.id}">${s.name}</option>`).join('') + '<option value="__txt">✍️ Własny napis</option>';
+{
+  const cats = [...new Set(SHAPES.map(s => s.cat))];
+  what.innerHTML = `<option value="__all">✨ Zaskocz mnie (sprawdź całą bibliotekę: ${SHAPES.length} kształtów)</option>` +
+    cats.map(c => `<optgroup label="${c[0].toUpperCase() + c.slice(1)}">` + SHAPES.filter(s => s.cat === c).map(s => `<option value="${s.id}">${s.name}</option>`).join('') + '</optgroup>').join('') +
+    '<option value="__txt">✍️ Własny napis</option>';
+}
 what.onchange = () => { $('txt').style.display = what.value === '__txt' ? 'block' : 'none'; };
 
 const ACT_HINT = {
@@ -207,7 +211,11 @@ async function run() {
   const D = Math.max(3, Math.min(200, +$('dist').value || 15)) * 1000, tol = +$('tol').value, prof = act;
   const dirV = $('dir').value, dir = dirV === '' ? null : (+dirV) * Math.PI / 180;
   let list;
-  if (what.value === '__all') list = D <= 50000 ? SHAPES.concat(FUN_WORDS.map(textShape)) : SHAPES.slice();
+  if (what.value === '__all') {
+    const maxDetail = D > 60000 ? 1 : D > 30000 ? 2 : 3;
+    list = SHAPES.filter(s => s.detail <= maxDetail);
+    if (D <= 25000) list = list.concat(FUN_WORDS.map(textShape));
+  }
   else if (what.value === '__txt') { const t = textShape($('txt').value.trim()); if (!t) { status('Wpisz napis z liter lub cyfr.', true); return; } list = [t]; }
   else list = SHAPES.filter(s => s.id === what.value);
   const preps = list.map(prepShape);
@@ -238,7 +246,7 @@ async function run() {
       const sc = [];
       for (let i = 0; i < preps.length; i++) { await tick(); const t = searchShape(preps[i], ctx, st, D, tol, dir); sc.push({ sp: preps[i], s: t[0] ? t[0].score : 1e9 }); progress(0.3 + 0.2 * (i + 1) / preps.length); }
       sc.sort((a, b) => a.s - b.s);
-      chosen = sc.slice(0, 7).map(x => x.sp);
+      chosen = sc.slice(0, 10).map(x => x.sp);
     }
     for (let i = 0; i < chosen.length; i++) {
       status(`Układam trasę: ${chosen[i].name} (${i + 1}/${chosen.length})…`); await tick();
@@ -246,8 +254,21 @@ async function run() {
       progress(0.5 + 0.5 * (i + 1) / chosen.length);
     }
     progress(null);
-    if (!results.length) status('Nie udało się ułożyć trasy. Spróbuj innego dystansu lub miejsca.', true);
-    else { status(`Gotowe. Najlepsze dopasowanie: ${results[0].sp.name}. Dotknij propozycji, żeby ją obejrzeć.`); select(0); }
+    const MIN_FIT = 60;
+    if (preps.length > 1) {
+      const good = results.filter(r => r.fit >= MIN_FIT && Math.abs(r.total - D) / D < 0.25);
+      const dropped = results.length - good.length;
+      if (good.length) { results = good; renderResults(); }
+      else { results = results.slice(0, 3); renderResults(); }
+      if (!results.length) status('Nie udało się ułożyć trasy. Spróbuj innego dystansu lub miejsca.', true);
+      else status(good.length
+        ? `Sprawdziłem ${preps.length} kształtów. Najlepiej pasujące do dróg w tej okolicy: ${good.length}${dropped ? ` (z ${chosen.length} ułożonych odrzuciłem ${dropped} słabszych)` : ''}. Konkretny kształt możesz też wybrać z listy.`
+        : 'Żaden kształt nie pasuje tu dobrze. Pokazuję trzy najlepsze. Spróbuj innego kierunku, dystansu albo dłuższego dojazdu.', !good.length);
+      if (results.length) select(0);
+    } else {
+      if (!results.length) status('Nie udało się ułożyć trasy. Spróbuj innego dystansu lub miejsca.', true);
+      else { status(results[0].fit >= MIN_FIT ? 'Gotowe.' : 'Ten kształt słabo pasuje do dróg w tej okolicy. Spróbuj innego kierunku lub dystansu.', results[0].fit < MIN_FIT); select(0); }
+    }
   } catch (e) { console.error(e); progress(null); status(e.message, true); }
   $('go').disabled = false;
 }
